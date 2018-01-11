@@ -1,0 +1,113 @@
+STMicroelectronics STM32 Peripheral Reset Clock Controller
+==========================================================
+
+The RCC IP is both a reset and a clock controller.
+
+Please also refer to reset.txt for common reset controller binding usage.
+
+Please also refer to clock-bindings.txt for common clock controller
+binding usage.
+
+
+Required properties:
+- compatible: "simple-mfd", "syscon"
+- reg: should be register base and length as documented in the datasheet
+
+- Sub-nodes:
+  - compatible: "st,stm32mp1-rcc-clk"
+	- #clock-cells: 1, device nodes should specify the clock in their
+	  "clocks" property, containing a phandle to the clock device node,
+	  an index specifying the clock to use.
+
+  - compatible: "st,stm32mp1-rcc-rst"
+	- #reset-cells: Shall be 1
+
+  - compatible: "st,stm32mp1-rcc-pwr"
+	- interrupts: interrupts for the RCC. Generic interrupt client node
+	  bindings are described in interrupt-controller/interrupts.txt
+
+Example:
+	rcc: rcc@50000000 {
+		compatible = "simple-mfd", "syscon";
+		reg = <0x50000000 0x1000>;
+
+		rcc_clk: rcc-clk@50000000 {
+			#clock-cells = <1>;
+			compatible = "st,stm32mp1-rcc-clk";
+		};
+
+		rcc_rst: rcc-reset@50000000 {
+			#reset-cells = <1>;
+			compatible = "st,stm32mp1-rcc-rst";
+		};
+
+		rcc-pwr@50000000 {
+			compatible = "st,stm32mp1-rcc-pwr";
+			interrupts = <GIC_SPI 5 IRQ_TYPE_NONE>, <GIC_SPI 145 IRQ_TYPE_NONE>;
+		};
+	};
+
+Specifying clocks
+=================
+
+There are several types of clocks: pll, pll outputs (odf), bus clocks and
+kernel clocks.
+The index to use by the drivers in the device tree has been built as follows:
+- bus clocks starting at index 5
+- timer prescalers starting at index 115
+- kernel clocks starting at index 120
+- pll clocks starting at 170
+- odf clocks starting at 175
+- aux clocks starting at 190
+
+A conversion file named stm32mp1-clks.h is available in <include/dt-bindings/clk>
+It allows to use a constant character string instead of an offset by making
+links such as:
+
+..
+..
+#define DMA1 70
+..
+..
+
+#define SPI6_K 138
+
+
+Example:
+
+	/* Accessing DMA1 clock */
+	... {
+		clocks = <&rcc_clk DMA1>
+	};
+
+	/* Accessing SPI6 kernel clock */
+	... {
+		clocks = <&rcc_clk SPI6_K>
+	};
+
+Specifying softreset control of devices
+=======================================
+
+Device nodes should specify the reset channel required in their "resets"
+property, containing a phandle to the reset device node and an index specifying
+which channel to use.
+The index is the bit number within the RCC registers bank, starting from RCC
+base address.
+It is calculated as: index = register_offset / 4 * 32 + bit_offset.
+Where bit_offset is the bit offset within the register.
+
+For example on STM32MP1, for LTDC reset:
+ ltdc = APB4_RSTSETR_offset / 4 * 32 + LTDC_bit_offset
+      = 0x180 / 4 * 32 + 0 = 3072
+
+The list of valid indices for STM32MP1 is available in:
+include/dt-bindings/reset-controller/stm32mp1-resets.h
+
+This file implements defines like:
+#define LTDC_R	3072
+
+example:
+
+	ltdc {
+		resets = <&rcc_rst LTDC_R>;
+	};

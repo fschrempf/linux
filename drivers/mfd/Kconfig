@@ -1781,6 +1781,35 @@ config MFD_STM32_TIMERS
 	  for PWM and IIO Timer. This driver allow to share the
 	  registers between the others drivers.
 
+config MFD_ST_MFX
+	bool "STMicroelectronics MFX"
+	depends on I2C
+	depends on OF || COMPILE_TEST
+	select MFD_CORE
+	select REGMAP_I2C
+	help
+	  Support for the STMicroelectronics Multi-Function eXpander.
+
+	  This driver provides common support for accessing the device,
+	  additional drivers must be enabled in order to use the functionality
+	  of the device. Currently available sub drivers are:
+
+		GPIO: mfx-gpio
+
+config MFD_STPMU1
+	tristate "Support for STPMU1 PMIC"
+	depends on (I2C=y && OF)
+	select REGMAP_I2C
+	select REGMAP_IRQ
+	select MFD_CORE
+	help
+	   Support for ST Microelectronics STPMU1 PMIC
+
+config STM32MP1_PWR
+	bool "STM32MP1 power manager"
+	depends on MACH_STM32MP157
+	default y
+
 menu "Multimedia Capabilities Port drivers"
 	depends on ARCH_SA1100
 

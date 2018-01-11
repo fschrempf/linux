@@ -1,0 +1,41 @@
+STMicroelectronics Multi-Function eXpander
+
+ST Multi-Function eXpander (MFX) is a slave controller using I2C for
+communication with the main MCU. Its main features are gpio expansion, main
+MCU IDD measurement (IDD is the amount of current that flows through VDD)
+and resistive touchscreen controller.
+
+Required properties:
+- compatible: must be "st,mfx"
+- reg: I2C address of the device
+- interrupts: interrupt triggered by MFX_IRQ_OUT signal
+- interrupt-parent: interrupt controller MFX is connected to
+
+Optional nodes:
+
+* GPIO eXpander
+MFX provides 16 programmable GPIOs, and it is also possible to recover 8
+alternate GPIOs if the main functions are not used (touchscreen controller and
+IDD measurement not enabled).
+
+Required properties:
+- compatible : must be "st,mfx-gpio"
+- gpio-controller: marks the device node as a GPIO controller
+- #gpio-cells: should be <2>, the first cell is the GPIO offset on this GPIO
+  controller, the second cell is the gpio flags in accordance with
+  <dt-bindings/gpio/st-mfx-gpio.h>.
+
+Example:
+
+	mfx: mfx@42 {
+		compatible = "st,mfx";
+		reg = <0x42>;
+		interrupts = <8 IRQ_TYPE_EDGE_RISING>;
+		interrupt-parent = <&gpioi>;
+
+		mfxgpio: mfx_gpio {
+			compatible = "st,mfx-gpio";
+			gpio-controller;
+			#gpio-cells = <2>;
+		};
+	};
