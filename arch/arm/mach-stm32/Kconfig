@@ -1,31 +1,61 @@
-config ARCH_STM32
-	bool "STMicrolectronics STM32"
-	depends on ARM_SINGLE_ARMV7M
+menuconfig ARCH_STM32
+	bool "STMicrolectronics STM32 family" if ARM_SINGLE_ARMV7M || ARCH_MULTI_V7
 	select ARCH_HAS_RESET_CONTROLLER
-	select ARMV7M_SYSTICK
 	select CLKSRC_STM32
 	select PINCTRL
 	select RESET_CONTROLLER
 	select STM32_EXTI
 	help
-	  Support for STMicroelectronics STM32 processors.
+	  Support for STMicroelectronics STM32 MCU/MPU family
+
+if ARCH_STM32
+
+if ARM_SINGLE_ARMV7M
+
+config ARCH_STM32_MCU
+	bool "STMicrolectronics STM32 MCU"
+	select ARMV7M_SYSTICK
+	help
+	  Support for STMicroelectronics STM32 Microcontrollers.
 
 config MACH_STM32F429
 	bool "STMicrolectronics STM32F429"
-	depends on ARCH_STM32
+	depends on ARCH_STM32_MCU
 	default y
 
 config MACH_STM32F469
 	bool "STMicrolectronics STM32F469"
-	depends on ARCH_STM32
+	depends on ARCH_STM32_MCU
 	default y
 
 config MACH_STM32F746
 	bool "STMicrolectronics STM32F746"
-	depends on ARCH_STM32
+	depends on ARCH_STM32_MCU
 	default y
 
 config MACH_STM32H743
 	bool "STMicrolectronics STM32H743"
-	depends on ARCH_STM32
+	depends on ARCH_STM32_MCU
 	default y
+
+endif
+
+if ARCH_MULTI_V7
+
+config ARCH_STM32_MPU
+	bool "STMicrolectronics STM32 MPU"
+	default y
+	select ARM_GIC
+	select HAVE_ARM_ARCH_TIMER
+	select ARM_PSCI
+	help
+	  Support for STMicroelectronics STM32 Microprocessors.
+
+config MACH_STM32MP157
+	bool "STMicrolectronics STM32MP157"
+	depends on ARCH_STM32_MPU
+	default y
+
+endif
+
+endif
