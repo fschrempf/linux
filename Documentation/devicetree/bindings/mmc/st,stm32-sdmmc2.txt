@@ -1,0 +1,39 @@
+* STMicroelectronics STM32 SDMMC2 controller
+
+The highspeed MMC host controller on STM32 soc family
+provides an interface for MMC, SD and SDIO types of memory cards.
+
+This file documents differences between the core properties described
+by mmc.txt and the properties used by the sdmmc2 driver.
+
+Required properties:
+ - compatible: Should be "st,stm32-sdmmc2"
+ - reg: mmc controller base registers
+ - interrupts: Should contain the interrupt number
+ - clocks: Should contain phandle for the clock feeding the controller
+ - resets: Should contain phandle for the reset feeding the controller
+
+Optional property:
+- st,idma: defines the idma mode
+   0: idma disabled, pio mode (default, if no property)
+   1: idma single buffer
+   2: idma double buffer
+- st,dirpol: for voltage tranceiver:
+  by default IOs driven as output when direction signal is low
+  but use it, if Voltage transceiver IOs driven as output when
+  direction signal is high
+- st,negedge: generate data & command on sdmmc clock falling edge
+
+Example:
+	sdmmc1: sdmmc@0x58005000 {
+		compatible = "st,stm32-sdmmc2";
+		reg = <0x58005000 0x1000>;
+		interrupts = <GIC_SPI 49 IRQ_TYPE_NONE>;
+		clocks = <&rcc SDMMC1_K>;
+		resets = <&rcc SDMMC1_R>;
+		st,idma = <1>;
+		bus-width = <4>;
+		cap-sd-highspeed;
+		cap-mmc-highspeed;
+		status = "disabled";
+	};
