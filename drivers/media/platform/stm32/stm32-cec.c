@@ -15,6 +15,8 @@
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
+#include <linux/pm_runtime.h>
+#include <linux/pm_wakeirq.h>
 #include <linux/regmap.h>
 
 #include <media/cec.h>
@@ -250,6 +252,7 @@ static int stm32_cec_probe(struct platform_device *pdev)
 	struct resource *res;
 	struct stm32_cec *cec;
 	void __iomem *mmio;
+	int wkp;
 	int ret;
 
 	cec = devm_kzalloc(&pdev->dev, sizeof(*cec), GFP_KERNEL);
@@ -272,6 +275,26 @@ static int stm32_cec_probe(struct platform_device *pdev)
 	cec->irq = platform_get_irq(pdev, 0);
 	if (cec->irq < 0)
 		return cec->irq;
+
+	irq_set_irq_wake(cec->irq, true);
+
+	wkp = platform_get_irq(pdev, 1);
+	if (wkp <= 0) {
+		dev_err(&pdev->dev, "Could not get wake up\n");
+		return -ENODEV;
+	}
+
+	ret = device_init_wakeup(&pdev->dev, true);
+	if (ret) {
+		dev_err(&pdev->dev, "Failed to init wake up irq\n");
+		return -ENODEV;
+	}
+
+	ret = dev_pm_set_dedicated_wake_irq(&pdev->dev, wkp);
+	if (ret) {
+		dev_err(&pdev->dev, "Failed to set wake up irq\n");
+		return -ENODEV;
+	}
 
 	ret = devm_request_threaded_irq(&pdev->dev, cec->irq,
 					stm32_cec_irq_handler,
@@ -328,6 +351,10 @@ static int stm32_cec_probe(struct platform_device *pdev)
 static int stm32_cec_remove(struct platform_device *pdev)
 {
 	struct stm32_cec *cec = platform_get_drvdata(pdev);
+
+	dev_pm_clear_wake_irq(&pdev->dev);
+	device_init_wakeup(&pdev->dev, false);
+	irq_set_irq_wake(cec->irq, false);
 
 	clk_unprepare(cec->clk_cec);
 	clk_unprepare(cec->clk_hdmi_cec);
