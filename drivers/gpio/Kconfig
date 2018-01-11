@@ -1027,6 +1027,16 @@ config GPIO_STMPE
 	  This enables support for the GPIOs found on the STMPE I/O
 	  Expanders.
 
+config GPIO_ST_MFX
+	bool "ST-MFX GPIOs"
+	depends on MFD_ST_MFX
+	depends on OF_GPIO
+	select GPIOLIB_IRQCHIP
+	help
+	  GPIO driver for STMicroelectronics Multi-Function eXpander.
+
+	  This provides GPIO interface supporting inputs and outputs.
+
 config GPIO_TC3589X
 	bool "TC3589X GPIOs"
 	depends on MFD_TC3589X
