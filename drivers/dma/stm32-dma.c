@@ -15,10 +15,12 @@
 #include <linux/dma-mapping.h>
 #include <linux/err.h>
 #include <linux/init.h>
+#include <linux/iopoll.h>
 #include <linux/jiffies.h>
 #include <linux/list.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/of_device.h>
 #include <linux/of_dma.h>
 #include <linux/platform_device.h>
@@ -36,6 +38,10 @@
 #define STM32_DMA_TEI			BIT(3) /* Transfer Error Interrupt */
 #define STM32_DMA_DMEI			BIT(2) /* Direct Mode Error Interrupt */
 #define STM32_DMA_FEI			BIT(0) /* FIFO Error Interrupt */
+#define STM32_DMA_MASKI			(STM32_DMA_TCI \
+					 | STM32_DMA_TEI \
+					 | STM32_DMA_DMEI \
+					 | STM32_DMA_FEI)
 
 /* DMA Stream x Configuration Register */
 #define STM32_DMA_SCR(x)		(0x0010 + 0x18 * (x)) /* x = 0..7 */
@@ -60,7 +66,7 @@
 #define STM32_DMA_SCR_PINC		BIT(9) /* Peripheral increment mode */
 #define STM32_DMA_SCR_CIRC		BIT(8) /* Circular mode */
 #define STM32_DMA_SCR_PFCTRL		BIT(5) /* Peripheral Flow Controller */
-#define STM32_DMA_SCR_TCIE		BIT(4) /* Transfer Cplete Int Enable*/
+#define STM32_DMA_SCR_TCIE		BIT(4) /* Transfer Complete Int Enable */
 #define STM32_DMA_SCR_TEIE		BIT(2) /* Transfer Error Int Enable */
 #define STM32_DMA_SCR_DMEIE		BIT(1) /* Direct Mode Err Int Enable */
 #define STM32_DMA_SCR_EN		BIT(0) /* Stream Enable */
@@ -114,6 +120,7 @@
 #define STM32_DMA_MAX_CHANNELS		0x08
 #define STM32_DMA_MAX_REQUEST_ID	0x08
 #define STM32_DMA_MAX_DATA_PARAM	0x03
+#define STM32_DMA_MIN_BURST		4
 #define STM32_DMA_MAX_BURST		16
 
 enum stm32_dma_width {
@@ -133,7 +140,7 @@ struct stm32_dma_cfg {
 	u32 channel_id;
 	u32 request_line;
 	u32 stream_config;
-	u32 threshold;
+	bool use_mdma;
 };
 
 struct stm32_dma_chan_reg {
@@ -161,6 +168,17 @@ struct stm32_dma_desc {
 	struct stm32_dma_sg_req sg_req[];
 };
 
+struct stm32_dma_mdma {
+	struct dma_chan			*chan;
+	struct scatterlist		*sg;
+	u32				sg_len;
+	enum dma_transfer_direction	dir;
+	struct sg_table			sgt;
+	struct dma_async_tx_descriptor *desc;
+	dma_async_tx_callback		callback;
+	void				*callback_param;
+};
+
 struct stm32_dma_chan {
 	struct virt_dma_chan vchan;
 	bool config_init;
@@ -171,6 +189,10 @@ struct stm32_dma_chan {
 	u32 next_sg;
 	struct dma_slave_config	dma_sconfig;
 	struct stm32_dma_chan_reg chan_reg;
+	u32 mem_burst;
+	u32 mem_width;
+	struct stm32_dma_mdma mchan;
+	bool use_mdma;
 };
 
 struct stm32_dma_device {
@@ -180,6 +202,8 @@ struct stm32_dma_device {
 	struct reset_control *rst;
 	bool mem2mem;
 	struct stm32_dma_chan chan[STM32_DMA_MAX_CHANNELS];
+	u32 sram_size;
+	dma_addr_t dma_buf;
 };
 
 static struct stm32_dma_device *stm32_dma_get_dev(struct stm32_dma_chan *chan)
@@ -235,6 +259,121 @@ static int stm32_dma_get_width(struct stm32_dma_chan *chan,
 	}
 }
 
+static enum dma_slave_buswidth stm32_dma_get_max_width(u32 buf_len,
+						       u32 threshold)
+{
+	enum dma_slave_buswidth max_width;
+
+	if (threshold == STM32_DMA_FIFO_THRESHOLD_FULL)
+		max_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
+	else
+		max_width = DMA_SLAVE_BUSWIDTH_2_BYTES;
+
+	while ((buf_len < max_width  || buf_len % max_width) &&
+	       max_width > DMA_SLAVE_BUSWIDTH_1_BYTE)
+		max_width = max_width >> 1;
+
+	return max_width;
+}
+
+static bool stm32_dma_fifo_threshold_is_allowed(u32 burst, u32 threshold,
+						enum dma_slave_buswidth width)
+{
+	/*
+	 * For D2M transfer only FIFO_FULL threshold is used.
+	 * For M2D transfer only FIFO_HALF_FULL is used.
+	 */
+	switch (width) {
+	case DMA_SLAVE_BUSWIDTH_1_BYTE:
+		switch (burst) {
+		case 0:
+		case 1:
+		case 4:
+		case 8:
+			return true;
+		case 16:
+			if (threshold == STM32_DMA_FIFO_THRESHOLD_FULL)
+				return true;
+			else
+				return false;
+		default:
+			return false;
+		}
+	case DMA_SLAVE_BUSWIDTH_2_BYTES:
+		switch (burst) {
+		case 0:
+		case 1:
+		case 4:
+			return true;
+		case 8:
+			if (threshold == STM32_DMA_FIFO_THRESHOLD_FULL)
+				return true;
+			else
+				return false;
+		case 16:
+			return false;
+		default:
+			return false;
+		}
+	case DMA_SLAVE_BUSWIDTH_4_BYTES:
+		switch (burst) {
+		case 0:
+		case 1:
+			return true;
+		case 4:
+			if (threshold == STM32_DMA_FIFO_THRESHOLD_FULL)
+				return true;
+			else
+				return false;
+		case 8:
+		case 16:
+			return false;
+		default:
+			return false;
+		}
+	default:
+		return false;
+	}
+}
+
+static bool stm32_dma_is_burst_possible(u32 buf_len, u32 threshold)
+{
+	switch (threshold) {
+	case STM32_DMA_FIFO_THRESHOLD_FULL:
+		if (buf_len >= STM32_DMA_MAX_BURST)
+			return true;
+		else
+			return false;
+	case STM32_DMA_FIFO_THRESHOLD_HALFFULL:
+		if (buf_len >= STM32_DMA_MAX_BURST / 2)
+			return true;
+		else
+			return false;
+	default:
+		return false;
+	}
+}
+
+static u32 stm32_dma_get_best_burst(u32 buf_len, u32 max_burst, u32 threshold,
+				    enum dma_slave_buswidth width)
+{
+	u32 best_burst = max_burst;
+
+	if (best_burst == 1 || !stm32_dma_is_burst_possible(buf_len, threshold))
+		return 0;
+
+	while ((buf_len < best_burst * width && best_burst > 1) ||
+	       !stm32_dma_fifo_threshold_is_allowed(best_burst, threshold,
+						    width)) {
+		if (best_burst > STM32_DMA_MIN_BURST)
+			best_burst = best_burst >> 1;
+		else
+			best_burst = 0;
+	}
+
+	return best_burst;
+}
+
 static int stm32_dma_get_burst(struct stm32_dma_chan *chan, u32 maxburst)
 {
 	switch (maxburst) {
@@ -254,12 +393,12 @@ static int stm32_dma_get_burst(struct stm32_dma_chan *chan, u32 maxburst)
 }
 
 static void stm32_dma_set_fifo_config(struct stm32_dma_chan *chan,
-				      u32 src_maxburst, u32 dst_maxburst)
+				      u32 src_burst, u32 dst_burst)
 {
 	chan->chan_reg.dma_sfcr &= ~STM32_DMA_SFCR_MASK;
 	chan->chan_reg.dma_scr &= ~STM32_DMA_SCR_DMEIE;
 
-	if ((!src_maxburst) && (!dst_maxburst)) {
+	if (!src_burst && !dst_burst) {
 		/* Using direct mode */
 		chan->chan_reg.dma_scr |= STM32_DMA_SCR_DMEIE;
 	} else {
@@ -300,7 +439,7 @@ static u32 stm32_dma_irq_status(struct stm32_dma_chan *chan)
 
 	flags = dma_isr >> (((chan->id & 2) << 3) | ((chan->id & 1) * 6));
 
-	return flags;
+	return flags & STM32_DMA_MASKI;
 }
 
 static void stm32_dma_irq_clear(struct stm32_dma_chan *chan, u32 flags)
@@ -315,6 +454,7 @@ static void stm32_dma_irq_clear(struct stm32_dma_chan *chan, u32 flags)
 	 * If (ch % 4) is 2 or 3, left shift the mask by 16 bits.
 	 * If (ch % 4) is 1 or 3, additionally left shift the mask by 6 bits.
 	 */
+	flags &= STM32_DMA_MASKI;
 	dma_ifcr = flags << (((chan->id & 2) << 3) | ((chan->id & 1) * 6));
 
 	if (chan->id & 4)
@@ -387,8 +527,12 @@ static void stm32_dma_stop(struct stm32_dma_chan *chan)
 static int stm32_dma_terminate_all(struct dma_chan *c)
 {
 	struct stm32_dma_chan *chan = to_stm32_dma_chan(c);
+	struct stm32_dma_mdma *mchan = &chan->mchan;
 	unsigned long flags;
 	LIST_HEAD(head);
+
+	if (chan->use_mdma)
+		dmaengine_terminate_async(mchan->chan);
 
 	spin_lock_irqsave(&chan->vchan.lock, flags);
 
@@ -432,6 +576,7 @@ static void stm32_dma_dump_reg(struct stm32_dma_chan *chan)
 static void stm32_dma_start_transfer(struct stm32_dma_chan *chan)
 {
 	struct stm32_dma_device *dmadev = stm32_dma_get_dev(chan);
+	struct stm32_dma_mdma *mchan = &chan->mchan;
 	struct virt_dma_desc *vdesc;
 	struct stm32_dma_sg_req *sg_req;
 	struct stm32_dma_chan_reg *reg;
@@ -449,6 +594,40 @@ static void stm32_dma_start_transfer(struct stm32_dma_chan *chan)
 
 		chan->desc = to_stm32_dma_desc(vdesc);
 		chan->next_sg = 0;
+	} else {
+		vdesc = &chan->desc->vdesc;
+	}
+
+	if (chan->use_mdma && chan->next_sg == 0) {
+		if (chan->desc->cyclic) {
+			/*
+			 * In cyclic mode with DMA/MDMA chain, we disable
+			 * transfer complete interrupt in order to avoid CPU
+			 * preemption after each period transferred.
+			 * So if one callback is set, it will be called by
+			 * MDMA driver.
+			 */
+			sg_req = &chan->desc->sg_req[0];
+			reg = &sg_req->chan_reg;
+			reg->dma_scr &= ~STM32_DMA_SCR_TCIE;
+			if (vdesc->tx.callback) {
+				mchan->desc->callback = vdesc->tx.callback;
+				mchan->desc->callback_param =
+					vdesc->tx.callback_param;
+				vdesc->tx.callback = NULL;
+				vdesc->tx.callback_param = NULL;
+			}
+		} else if (mchan->dir != DMA_MEM_TO_DEV && vdesc->tx.callback) {
+			/*
+			 * In sg mode, if any callback is set it will be called
+			 * by MDMA driver to notify the client when complete
+			 * DMA/MDMA chaining is terminated
+			 */
+			mchan->desc->callback = vdesc->tx.callback;
+			mchan->desc->callback_param = vdesc->tx.callback_param;
+			vdesc->tx.callback = NULL;
+			vdesc->tx.callback_param = NULL;
+		}
 	}
 
 	if (chan->next_sg == chan->desc->num_sgs)
@@ -513,20 +692,24 @@ static void stm32_dma_configure_next_sg(struct stm32_dma_chan *chan)
 
 static void stm32_dma_handle_chan_done(struct stm32_dma_chan *chan)
 {
-	if (chan->desc) {
-		if (chan->desc->cyclic) {
-			vchan_cyclic_callback(&chan->desc->vdesc);
-			chan->next_sg++;
-			stm32_dma_configure_next_sg(chan);
-		} else {
-			chan->busy = false;
-			if (chan->next_sg == chan->desc->num_sgs) {
-				list_del(&chan->desc->vdesc.node);
-				vchan_cookie_complete(&chan->desc->vdesc);
-				chan->desc = NULL;
-			}
-			stm32_dma_start_transfer(chan);
+	if (!chan->desc)
+		return;
+
+	if (chan->desc->cyclic) {
+		vchan_cyclic_callback(&chan->desc->vdesc);
+		if (chan->use_mdma)
+			return;
+		chan->next_sg++;
+		stm32_dma_configure_next_sg(chan);
+	} else {
+		chan->busy = false;
+		if (chan->next_sg == chan->desc->num_sgs) {
+			list_del(&chan->desc->vdesc.node);
+			vchan_cookie_complete(&chan->desc->vdesc);
+			chan->desc = NULL;
 		}
+
+		stm32_dma_start_transfer(chan);
 	}
 }
 
@@ -548,6 +731,8 @@ static irqreturn_t stm32_dma_chan_irq(int irq, void *devid)
 	} else {
 		stm32_dma_irq_clear(chan, status);
 		dev_err(chan2dev(chan), "DMA error: status=0x%08x\n", status);
+		if (!(scr & STM32_DMA_SCR_EN))
+			dev_err(chan2dev(chan), "chan disabled by HW\n");
 	}
 
 	spin_unlock(&chan->vchan.lock);
@@ -572,13 +757,14 @@ static void stm32_dma_issue_pending(struct dma_chan *c)
 
 static int stm32_dma_set_xfer_param(struct stm32_dma_chan *chan,
 				    enum dma_transfer_direction direction,
-				    enum dma_slave_buswidth *buswidth)
+				    enum dma_slave_buswidth *buswidth,
+				    u32 buf_len)
 {
 	enum dma_slave_buswidth src_addr_width, dst_addr_width;
 	int src_bus_width, dst_bus_width;
 	int src_burst_size, dst_burst_size;
-	u32 src_maxburst, dst_maxburst;
-	u32 dma_scr = 0;
+	u32 src_maxburst, dst_maxburst, src_best_burst, dst_best_burst;
+	u32 dma_scr, threshold;
 
 	src_addr_width = chan->dma_sconfig.src_addr_width;
 	dst_addr_width = chan->dma_sconfig.dst_addr_width;
@@ -587,22 +773,36 @@ static int stm32_dma_set_xfer_param(struct stm32_dma_chan *chan,
 
 	switch (direction) {
 	case DMA_MEM_TO_DEV:
+		threshold = STM32_DMA_FIFO_THRESHOLD_HALFFULL;
+		/* Set device data size */
 		dst_bus_width = stm32_dma_get_width(chan, dst_addr_width);
 		if (dst_bus_width < 0)
 			return dst_bus_width;
 
-		dst_burst_size = stm32_dma_get_burst(chan, dst_maxburst);
+		/* Set device burst size */
+		dst_best_burst = stm32_dma_get_best_burst(buf_len,
+							  dst_maxburst,
+							  threshold,
+							  dst_addr_width);
+
+		dst_burst_size = stm32_dma_get_burst(chan, dst_best_burst);
 		if (dst_burst_size < 0)
 			return dst_burst_size;
 
-		if (!src_addr_width)
-			src_addr_width = dst_addr_width;
-
+		/* Set memory data size */
+		src_addr_width = stm32_dma_get_max_width(buf_len, threshold);
+		chan->mem_width = src_addr_width;
 		src_bus_width = stm32_dma_get_width(chan, src_addr_width);
 		if (src_bus_width < 0)
 			return src_bus_width;
 
-		src_burst_size = stm32_dma_get_burst(chan, src_maxburst);
+		/* Set memory burst size */
+		src_maxburst = STM32_DMA_MAX_BURST / 2;
+		src_best_burst = stm32_dma_get_best_burst(buf_len,
+							  src_maxburst,
+							  threshold,
+							  src_addr_width);
+		src_burst_size = stm32_dma_get_burst(chan, src_best_burst);
 		if (src_burst_size < 0)
 			return src_burst_size;
 
@@ -612,27 +812,47 @@ static int stm32_dma_set_xfer_param(struct stm32_dma_chan *chan,
 			STM32_DMA_SCR_PBURST(dst_burst_size) |
 			STM32_DMA_SCR_MBURST(src_burst_size);
 
+		/* Set FIFO threshold */
+		chan->chan_reg.dma_sfcr &= ~STM32_DMA_SFCR_FTH_MASK;
+		chan->chan_reg.dma_sfcr |= STM32_DMA_SFCR_FTH(threshold);
+
+		/* Set peripheral address */
 		chan->chan_reg.dma_spar = chan->dma_sconfig.dst_addr;
 		*buswidth = dst_addr_width;
 		break;
 
 	case DMA_DEV_TO_MEM:
+		threshold = STM32_DMA_FIFO_THRESHOLD_FULL;
+		/* Set device data size */
 		src_bus_width = stm32_dma_get_width(chan, src_addr_width);
 		if (src_bus_width < 0)
 			return src_bus_width;
 
-		src_burst_size = stm32_dma_get_burst(chan, src_maxburst);
+		/* Set device burst size */
+		src_best_burst = stm32_dma_get_best_burst(buf_len,
+							  src_maxburst,
+							  threshold,
+							  src_addr_width);
+		chan->mem_burst = src_best_burst;
+		src_burst_size = stm32_dma_get_burst(chan, src_best_burst);
 		if (src_burst_size < 0)
 			return src_burst_size;
 
-		if (!dst_addr_width)
-			dst_addr_width = src_addr_width;
-
+		/* Set memory data size */
+		dst_addr_width = stm32_dma_get_max_width(buf_len, threshold);
+		chan->mem_width = dst_addr_width;
 		dst_bus_width = stm32_dma_get_width(chan, dst_addr_width);
 		if (dst_bus_width < 0)
 			return dst_bus_width;
 
-		dst_burst_size = stm32_dma_get_burst(chan, dst_maxburst);
+		/* Set memory burst size */
+		dst_maxburst = STM32_DMA_MAX_BURST;
+		dst_best_burst = stm32_dma_get_best_burst(buf_len,
+							  dst_maxburst,
+							  threshold,
+							  dst_addr_width);
+		chan->mem_burst = dst_best_burst;
+		dst_burst_size = stm32_dma_get_burst(chan, dst_best_burst);
 		if (dst_burst_size < 0)
 			return dst_burst_size;
 
@@ -642,6 +862,11 @@ static int stm32_dma_set_xfer_param(struct stm32_dma_chan *chan,
 			STM32_DMA_SCR_PBURST(src_burst_size) |
 			STM32_DMA_SCR_MBURST(dst_burst_size);
 
+		/* Set FIFO threshold */
+		chan->chan_reg.dma_sfcr &= ~STM32_DMA_SFCR_FTH_MASK;
+		chan->chan_reg.dma_sfcr |= STM32_DMA_SFCR_FTH(threshold);
+
+		/* Set peripheral address */
 		chan->chan_reg.dma_spar = chan->dma_sconfig.src_addr;
 		*buswidth = chan->dma_sconfig.src_addr_width;
 		break;
@@ -651,8 +876,9 @@ static int stm32_dma_set_xfer_param(struct stm32_dma_chan *chan,
 		return -EINVAL;
 	}
 
-	stm32_dma_set_fifo_config(chan, src_maxburst, dst_maxburst);
+	stm32_dma_set_fifo_config(chan, src_best_burst, dst_best_burst);
 
+	/* Set DMA control register */
 	chan->chan_reg.dma_scr &= ~(STM32_DMA_SCR_DIR_MASK |
 			STM32_DMA_SCR_PSIZE_MASK | STM32_DMA_SCR_MSIZE_MASK |
 			STM32_DMA_SCR_PBURST_MASK | STM32_DMA_SCR_MBURST_MASK);
@@ -666,17 +892,203 @@ static void stm32_dma_clear_reg(struct stm32_dma_chan_reg *regs)
 	memset(regs, 0, sizeof(struct stm32_dma_chan_reg));
 }
 
+static int stm32_dma_dummy_memcpy_xfer(struct stm32_dma_chan *chan)
+{
+	struct stm32_dma_device *dmadev = stm32_dma_get_dev(chan);
+	struct dma_device *ddev = &dmadev->ddev;
+	struct dma_async_tx_descriptor *desc;
+	u8 src_buf, dst_buf;
+	unsigned long flags;
+	dma_addr_t dma_src_buf, dma_dst_buf;
+	u32 ndtr;
+	int len, ret;
+
+	ret = 0;
+	src_buf = 0;
+	len = 1;
+
+	dma_src_buf = dma_map_single(ddev->dev, &src_buf, len, DMA_TO_DEVICE);
+	ret = dma_mapping_error(ddev->dev, dma_src_buf);
+	if (ret < 0) {
+		dev_err(chan2dev(chan), "Source buffer map failed\n");
+		return ret;
+	}
+
+	dma_dst_buf = dma_map_single(ddev->dev, &dst_buf, len, DMA_FROM_DEVICE);
+	ret = dma_mapping_error(ddev->dev, dma_dst_buf);
+	if (ret < 0) {
+		dev_err(chan2dev(chan), "Destination buffer map failed\n");
+		dma_unmap_single(ddev->dev, dma_src_buf, len, DMA_TO_DEVICE);
+		return ret;
+	}
+
+	desc = ddev->device_prep_dma_memcpy(&chan->vchan.chan, dma_dst_buf,
+					    dma_src_buf, len,
+					    DMA_PREP_INTERRUPT);
+	if (!desc)
+		return -EINVAL;
+
+	ret = dma_submit_error(dmaengine_submit(desc));
+	if (ret < 0) {
+		dev_err(chan2dev(chan), "DMA submit failed\n");
+		goto end;
+	}
+
+	dma_async_issue_pending(&chan->vchan.chan);
+
+	ret = readl_relaxed_poll_timeout_atomic(
+			dmadev->base + STM32_DMA_SNDTR(chan->id),
+			ndtr, !ndtr, 10, 1000);
+	if (ret) {
+		dev_err(chan2dev(chan), "%s: timeout!\n", __func__);
+		ret = -EBUSY;
+	}
+
+	spin_lock_irqsave(&chan->vchan.lock, flags);
+
+	if (chan->desc) {
+		chan->busy = false;
+		list_del(&chan->desc->vdesc.node);
+		chan->desc = NULL;
+	}
+
+	spin_unlock_irqrestore(&chan->vchan.lock, flags);
+
+end:
+	dma_unmap_single(ddev->dev, dma_src_buf, len, DMA_TO_DEVICE);
+	dma_unmap_single(ddev->dev, dma_dst_buf, len, DMA_FROM_DEVICE);
+
+	return ret;
+}
+
+static int stm32_dma_mdma_prep_slave_sg(struct stm32_dma_chan *chan,
+					struct scatterlist *sgl,
+					unsigned int sg_len,
+					enum dma_transfer_direction direction)
+{
+	struct stm32_dma_mdma *mchan = &chan->mchan;
+	struct stm32_dma_device *dmadev = stm32_dma_get_dev(chan);
+	dma_addr_t dma_buf = dmadev->dma_buf + chan->id * dmadev->sram_size;
+	struct scatterlist *sg;
+	struct dma_slave_config config;
+	u32 len;
+	int i, ret;
+
+	/* Check that each sg len is not higher than a page */
+	for_each_sg(sgl, sg, sg_len, i) {
+		len = sg_dma_len(sg);
+		if (len > dmadev->sram_size) {
+			dev_err(chan2dev(chan),
+				"max buf size = %d bytes\n", dmadev->sram_size);
+			return -EINVAL;
+		}
+	}
+
+	memset(&config, 0, sizeof(config));
+	mchan->sg = sgl;
+	mchan->sg_len = sg_len;
+	mchan->dir = direction;
+
+	/* Configure MDMA channel */
+	if (direction == DMA_MEM_TO_DEV)
+		config.dst_addr = dma_buf;
+	else
+		config.src_addr = dma_buf;
+	ret = dmaengine_slave_config(mchan->chan, &config);
+	if (ret < 0)
+		return ret;
+
+	/* Prepare MDMA descriptor */
+	mchan->desc = dmaengine_prep_slave_sg(mchan->chan, mchan->sg,
+					      mchan->sg_len, direction,
+					      DMA_PREP_INTERRUPT);
+	if (!mchan->desc)
+		return -EINVAL;
+
+	ret = dma_submit_error(dmaengine_submit(mchan->desc));
+	if (ret < 0) {
+		dev_err(chan2dev(chan), "MDMA submit failed\n");
+		return ret;
+	}
+
+	dma_async_issue_pending(mchan->chan);
+
+	/*
+	 * In case of M2D transfer, we have to generate dummy DMA transfer to
+	 * copy 1st sg data into SRAM
+	 */
+	if (direction == DMA_MEM_TO_DEV) {
+		ret = stm32_dma_dummy_memcpy_xfer(chan);
+		if (ret < 0) {
+			dmaengine_terminate_async(mchan->chan);
+			return ret;
+		}
+	}
+
+	/* Build new sg for DMA transfer */
+	ret = sg_alloc_table(&mchan->sgt, mchan->sg_len, GFP_ATOMIC);
+	if (ret) {
+		dev_err(chan2dev(chan), "sg table alloc failed\n");
+		return -ENOMEM;
+	}
+
+	for_each_sg(mchan->sgt.sgl, sg, mchan->sgt.nents, i) {
+		len = sg_dma_len(sgl);
+		sg->dma_address = dma_buf;
+		sg->length = (unsigned int)len;
+	}
+
+	return 0;
+}
+
+static int stm32_dma_setup_sg_requests(struct stm32_dma_chan *chan,
+				       struct scatterlist *sgl,
+				       unsigned int sg_len,
+				       enum dma_transfer_direction direction,
+				       struct stm32_dma_desc *desc)
+{
+	struct scatterlist *sg;
+	u32 nb_data_items;
+	int i, ret;
+	enum dma_slave_buswidth buswidth;
+
+	for_each_sg(sgl, sg, sg_len, i) {
+		ret = stm32_dma_set_xfer_param(chan, direction, &buswidth,
+					       sg_dma_len(sg));
+		if (ret < 0)
+			return ret;
+
+		desc->sg_req[i].len = sg_dma_len(sg);
+
+		nb_data_items = desc->sg_req[i].len / buswidth;
+		if (nb_data_items > STM32_DMA_MAX_DATA_ITEMS) {
+			dev_err(chan2dev(chan), "nb items not supported\n");
+			return -EINVAL;
+		}
+
+		stm32_dma_clear_reg(&desc->sg_req[i].chan_reg);
+		desc->sg_req[i].chan_reg.dma_scr = chan->chan_reg.dma_scr;
+		desc->sg_req[i].chan_reg.dma_sfcr = chan->chan_reg.dma_sfcr;
+		desc->sg_req[i].chan_reg.dma_spar = chan->chan_reg.dma_spar;
+		desc->sg_req[i].chan_reg.dma_sm0ar = sg_dma_address(sg);
+		desc->sg_req[i].chan_reg.dma_sm1ar = sg_dma_address(sg);
+		desc->sg_req[i].chan_reg.dma_sndtr = nb_data_items;
+	}
+
+	desc->num_sgs = sg_len;
+
+	return 0;
+}
+
 static struct dma_async_tx_descriptor *stm32_dma_prep_slave_sg(
 	struct dma_chan *c, struct scatterlist *sgl,
 	u32 sg_len, enum dma_transfer_direction direction,
 	unsigned long flags, void *context)
 {
 	struct stm32_dma_chan *chan = to_stm32_dma_chan(c);
+	struct stm32_dma_mdma *mchan = &chan->mchan;
 	struct stm32_dma_desc *desc;
-	struct scatterlist *sg;
-	enum dma_slave_buswidth buswidth;
-	u32 nb_data_items;
-	int i, ret;
+	int ret;
 
 	if (!chan->config_init) {
 		dev_err(chan2dev(chan), "dma channel is not configured\n");
@@ -692,35 +1104,32 @@ static struct dma_async_tx_descriptor *stm32_dma_prep_slave_sg(
 	if (!desc)
 		return NULL;
 
-	ret = stm32_dma_set_xfer_param(chan, direction, &buswidth);
-	if (ret < 0)
-		goto err;
-
 	/* Set peripheral flow controller */
 	if (chan->dma_sconfig.device_fc)
 		chan->chan_reg.dma_scr |= STM32_DMA_SCR_PFCTRL;
 	else
 		chan->chan_reg.dma_scr &= ~STM32_DMA_SCR_PFCTRL;
 
-	for_each_sg(sgl, sg, sg_len, i) {
-		desc->sg_req[i].len = sg_dma_len(sg);
-
-		nb_data_items = desc->sg_req[i].len / buswidth;
-		if (nb_data_items > STM32_DMA_MAX_DATA_ITEMS) {
-			dev_err(chan2dev(chan), "nb items not supported\n");
+	if (chan->use_mdma) {
+		/* Prepare a transfer with MDMA/DMA chain */
+		ret = stm32_dma_mdma_prep_slave_sg(chan, sgl, sg_len,
+						   direction);
+		if (ret < 0)
 			goto err;
-		}
+		ret = stm32_dma_setup_sg_requests(chan, mchan->sgt.sgl,
+						  mchan->sgt.nents, direction,
+						  desc);
+		if (ret < 0)
+			goto err;
 
-		stm32_dma_clear_reg(&desc->sg_req[i].chan_reg);
-		desc->sg_req[i].chan_reg.dma_scr = chan->chan_reg.dma_scr;
-		desc->sg_req[i].chan_reg.dma_sfcr = chan->chan_reg.dma_sfcr;
-		desc->sg_req[i].chan_reg.dma_spar = chan->chan_reg.dma_spar;
-		desc->sg_req[i].chan_reg.dma_sm0ar = sg_dma_address(sg);
-		desc->sg_req[i].chan_reg.dma_sm1ar = sg_dma_address(sg);
-		desc->sg_req[i].chan_reg.dma_sndtr = nb_data_items;
+	} else {
+		/* Prepare a normal DMA transfer */
+		ret = stm32_dma_setup_sg_requests(chan, sgl, sg_len, direction,
+						  desc);
+		if (ret < 0)
+			goto err;
 	}
 
-	desc->num_sgs = sg_len;
 	desc->cyclic = false;
 
 	return vchan_tx_prep(&chan->vchan, &desc->vdesc, flags);
@@ -730,15 +1139,87 @@ err:
 	return NULL;
 }
 
+static int stm32_dma_mdma_prep_dma_cyclic(struct stm32_dma_chan *chan,
+					  dma_addr_t buf_addr, size_t buf_len,
+					  size_t period_len,
+					  enum dma_transfer_direction direction)
+{
+	struct stm32_dma_mdma *mchan = &chan->mchan;
+	struct stm32_dma_device *dmadev = stm32_dma_get_dev(chan);
+	struct dma_slave_config config;
+	dma_addr_t mem;
+	int ret;
+
+	if (period_len != buf_len && period_len > dmadev->sram_size / 2) {
+		dev_err(chan2dev(chan),
+			"max period for DBM DMAs chain: %d bytes\n",
+			dmadev->sram_size / 2);
+		return -EINVAL;
+	} else if (period_len == buf_len &&
+		   period_len > dmadev->sram_size) {
+		dev_err(chan2dev(chan),
+			"max period for circ DMAs chain: %d bytes\n",
+			dmadev->sram_size);
+		return -EINVAL;
+	}
+
+	mchan->dir = direction;
+	memset(&config, 0, sizeof(config));
+	mem = buf_addr;
+
+	/* Configure MDMA channel */
+	if (direction == DMA_MEM_TO_DEV)
+		config.dst_addr = dmadev->dma_buf + chan->id *
+			dmadev->sram_size;
+	else
+		config.src_addr = dmadev->dma_buf + chan->id *
+			dmadev->sram_size;
+	ret = dmaengine_slave_config(mchan->chan, &config);
+	if (ret < 0)
+		return ret;
+
+	/* Prepare MDMA descriptor */
+	mchan->desc = dmaengine_prep_dma_cyclic(mchan->chan, buf_addr, buf_len,
+						period_len, direction,
+						DMA_PREP_INTERRUPT);
+	if (!mchan->desc)
+		return -EINVAL;
+
+	ret = dma_submit_error(dmaengine_submit(mchan->desc));
+	if (ret < 0) {
+		dev_err(chan2dev(chan), "MDMA submit failed\n");
+		return ret;
+	}
+
+	dma_async_issue_pending(mchan->chan);
+
+	/*
+	 * In case of M2D transfer, we have to generate dummy DMA transfer to
+	 * copy 1 period of data into SRAM
+	 */
+	if (direction == DMA_MEM_TO_DEV) {
+		ret = stm32_dma_dummy_memcpy_xfer(chan);
+		if (ret < 0) {
+			dmaengine_terminate_async(mchan->chan);
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
 static struct dma_async_tx_descriptor *stm32_dma_prep_dma_cyclic(
 	struct dma_chan *c, dma_addr_t buf_addr, size_t buf_len,
 	size_t period_len, enum dma_transfer_direction direction,
 	unsigned long flags)
 {
 	struct stm32_dma_chan *chan = to_stm32_dma_chan(c);
+	struct stm32_dma_device *dmadev = stm32_dma_get_dev(chan);
+	struct stm32_dma_chan_reg *chan_reg = &chan->chan_reg;
 	struct stm32_dma_desc *desc;
 	enum dma_slave_buswidth buswidth;
 	u32 num_periods, nb_data_items;
+	dma_addr_t dma_buf, dma_buf2 = 0;
 	int i, ret;
 
 	if (!buf_len || !period_len) {
@@ -767,7 +1248,7 @@ static struct dma_async_tx_descriptor *stm32_dma_prep_dma_cyclic(
 		return NULL;
 	}
 
-	ret = stm32_dma_set_xfer_param(chan, direction, &buswidth);
+	ret = stm32_dma_set_xfer_param(chan, direction, &buswidth, period_len);
 	if (ret < 0)
 		return NULL;
 
@@ -786,27 +1267,42 @@ static struct dma_async_tx_descriptor *stm32_dma_prep_dma_cyclic(
 	/* Clear periph ctrl if client set it */
 	chan->chan_reg.dma_scr &= ~STM32_DMA_SCR_PFCTRL;
 
-	num_periods = buf_len / period_len;
+	if (chan->use_mdma) {
+		ret = stm32_dma_mdma_prep_dma_cyclic(chan, buf_addr, buf_len,
+						     period_len, direction);
+		if (ret < 0)
+			return NULL;
+		dma_buf = dmadev->dma_buf + chan->id * dmadev->sram_size;
+		dma_buf2 = dma_buf + dmadev->sram_size / 2;
+		num_periods = 1;
+	} else {
+		num_periods = buf_len / period_len;
+		dma_buf = buf_addr;
+	}
 
 	desc = stm32_dma_alloc_desc(num_periods);
 	if (!desc)
 		return NULL;
 
-	for (i = 0; i < num_periods; i++) {
-		desc->sg_req[i].len = period_len;
-
-		stm32_dma_clear_reg(&desc->sg_req[i].chan_reg);
-		desc->sg_req[i].chan_reg.dma_scr = chan->chan_reg.dma_scr;
-		desc->sg_req[i].chan_reg.dma_sfcr = chan->chan_reg.dma_sfcr;
-		desc->sg_req[i].chan_reg.dma_spar = chan->chan_reg.dma_spar;
-		desc->sg_req[i].chan_reg.dma_sm0ar = buf_addr;
-		desc->sg_req[i].chan_reg.dma_sm1ar = buf_addr;
-		desc->sg_req[i].chan_reg.dma_sndtr = nb_data_items;
-		buf_addr += period_len;
-	}
-
 	desc->num_sgs = num_periods;
 	desc->cyclic = true;
+
+	for (i = 0; i < num_periods; i++) {
+		desc->sg_req[i].len = period_len;
+		stm32_dma_clear_reg(&desc->sg_req[i].chan_reg);
+		desc->sg_req[i].chan_reg.dma_scr = chan_reg->dma_scr;
+		desc->sg_req[i].chan_reg.dma_sfcr = chan_reg->dma_sfcr;
+		desc->sg_req[i].chan_reg.dma_spar = chan_reg->dma_spar;
+		if (chan->use_mdma) {
+			desc->sg_req[i].chan_reg.dma_sm0ar = dma_buf;
+			desc->sg_req[i].chan_reg.dma_sm1ar = dma_buf2;
+		} else {
+			desc->sg_req[i].chan_reg.dma_sm0ar = dma_buf;
+			desc->sg_req[i].chan_reg.dma_sm1ar = dma_buf;
+			dma_buf += period_len;
+		}
+		desc->sg_req[i].chan_reg.dma_sndtr = nb_data_items;
+	}
 
 	return vchan_tx_prep(&chan->vchan, &desc->vdesc, flags);
 }
@@ -816,9 +1312,10 @@ static struct dma_async_tx_descriptor *stm32_dma_prep_dma_memcpy(
 	dma_addr_t src, size_t len, unsigned long flags)
 {
 	struct stm32_dma_chan *chan = to_stm32_dma_chan(c);
-	u32 num_sgs;
+	enum dma_slave_buswidth max_width;
 	struct stm32_dma_desc *desc;
 	size_t xfer_count, offset;
+	u32 num_sgs, best_burst, dma_burst, threshold;
 	int i;
 
 	num_sgs = DIV_ROUND_UP(len, STM32_DMA_MAX_DATA_ITEMS);
@@ -826,25 +1323,34 @@ static struct dma_async_tx_descriptor *stm32_dma_prep_dma_memcpy(
 	if (!desc)
 		return NULL;
 
+	threshold = STM32_DMA_FIFO_THRESHOLD_FULL;
+
 	for (offset = 0, i = 0; offset < len; offset += xfer_count, i++) {
 		xfer_count = min_t(size_t, len - offset,
 				   STM32_DMA_MAX_DATA_ITEMS);
 
-		desc->sg_req[i].len = xfer_count;
+		/* Compute best burst size */
+		max_width = DMA_SLAVE_BUSWIDTH_1_BYTE;
+		best_burst = stm32_dma_get_best_burst(len, STM32_DMA_MAX_BURST,
+						      threshold, max_width);
+		dma_burst = stm32_dma_get_burst(chan, best_burst);
 
 		stm32_dma_clear_reg(&desc->sg_req[i].chan_reg);
 		desc->sg_req[i].chan_reg.dma_scr =
 			STM32_DMA_SCR_DIR(STM32_DMA_MEM_TO_MEM) |
+			STM32_DMA_SCR_PBURST(dma_burst) |
+			STM32_DMA_SCR_MBURST(dma_burst) |
 			STM32_DMA_SCR_MINC |
 			STM32_DMA_SCR_PINC |
 			STM32_DMA_SCR_TCIE |
 			STM32_DMA_SCR_TEIE;
-		desc->sg_req[i].chan_reg.dma_sfcr = STM32_DMA_SFCR_DMDIS |
-			STM32_DMA_SFCR_FTH(STM32_DMA_FIFO_THRESHOLD_FULL) |
-			STM32_DMA_SFCR_FEIE;
+		desc->sg_req[i].chan_reg.dma_sfcr |= STM32_DMA_SFCR_MASK;
+		desc->sg_req[i].chan_reg.dma_sfcr |=
+			STM32_DMA_SFCR_FTH(threshold);
 		desc->sg_req[i].chan_reg.dma_spar = src + offset;
 		desc->sg_req[i].chan_reg.dma_sm0ar = dest + offset;
 		desc->sg_req[i].chan_reg.dma_sndtr = xfer_count;
+		desc->sg_req[i].len = xfer_count;
 	}
 
 	desc->num_sgs = num_sgs;
@@ -869,6 +1375,7 @@ static size_t stm32_dma_desc_residue(struct stm32_dma_chan *chan,
 				     struct stm32_dma_desc *desc,
 				     u32 next_sg)
 {
+	u32 modulo, burst_size;
 	u32 residue = 0;
 	int i;
 
@@ -876,8 +1383,10 @@ static size_t stm32_dma_desc_residue(struct stm32_dma_chan *chan,
 	 * In cyclic mode, for the last period, residue = remaining bytes from
 	 * NDTR
 	 */
-	if (chan->desc->cyclic && next_sg == 0)
-		return stm32_dma_get_remaining_bytes(chan);
+	if (chan->desc->cyclic && next_sg == 0) {
+		residue = stm32_dma_get_remaining_bytes(chan);
+		goto end;
+	}
 
 	/*
 	 * For all other periods in cyclic mode, and in sg mode,
@@ -888,6 +1397,15 @@ static size_t stm32_dma_desc_residue(struct stm32_dma_chan *chan,
 		residue += desc->sg_req[i].len;
 	residue += stm32_dma_get_remaining_bytes(chan);
 
+end:
+	if (!chan->mem_burst)
+		return residue;
+
+	burst_size = chan->mem_burst * chan->mem_width;
+	modulo = residue % burst_size;
+	if (modulo)
+		residue = residue - modulo + burst_size;
+
 	return residue;
 }
 
@@ -896,10 +1414,21 @@ static enum dma_status stm32_dma_tx_status(struct dma_chan *c,
 					   struct dma_tx_state *state)
 {
 	struct stm32_dma_chan *chan = to_stm32_dma_chan(c);
+	struct stm32_dma_mdma *mchan = &chan->mchan;
 	struct virt_dma_desc *vdesc;
 	enum dma_status status;
 	unsigned long flags;
 	u32 residue = 0;
+
+	/*
+	 * When  DMA/MDMA chain is used, we return the status of MDMA in cyclic
+	 * mode and for D2M transfer in sg mode in order to return the correct
+	 * residue if any
+	 */
+	if (chan->desc && chan->use_mdma && (mchan->dir != DMA_MEM_TO_DEV ||
+					     chan->desc->cyclic))
+		return dmaengine_tx_status(mchan->chan, mchan->chan->cookie,
+					   state);
 
 	status = dma_cookie_status(c, cookie, state);
 	if ((status == DMA_COMPLETE) || (!state))
@@ -969,14 +1498,10 @@ static void stm32_dma_set_config(struct stm32_dma_chan *chan,
 			  struct stm32_dma_cfg *cfg)
 {
 	stm32_dma_clear_reg(&chan->chan_reg);
-
 	chan->chan_reg.dma_scr = cfg->stream_config & STM32_DMA_SCR_CFG_MASK;
 	chan->chan_reg.dma_scr |= STM32_DMA_SCR_REQ(cfg->request_line);
-
-	/* Enable Interrupts  */
 	chan->chan_reg.dma_scr |= STM32_DMA_SCR_TEIE | STM32_DMA_SCR_TCIE;
-
-	chan->chan_reg.dma_sfcr = cfg->threshold & STM32_DMA_SFCR_FTH_MASK;
+	chan->use_mdma = cfg->use_mdma;
 }
 
 static struct dma_chan *stm32_dma_of_xlate(struct of_phandle_args *dma_spec,
@@ -996,7 +1521,7 @@ static struct dma_chan *stm32_dma_of_xlate(struct of_phandle_args *dma_spec,
 	cfg.channel_id = dma_spec->args[0];
 	cfg.request_line = dma_spec->args[1];
 	cfg.stream_config = dma_spec->args[2];
-	cfg.threshold = dma_spec->args[3];
+	cfg.use_mdma = dma_spec->args[3];
 
 	if ((cfg.channel_id >= STM32_DMA_MAX_CHANNELS) ||
 	    (cfg.request_line >= STM32_DMA_MAX_REQUEST_ID)) {
@@ -1014,6 +1539,9 @@ static struct dma_chan *stm32_dma_of_xlate(struct of_phandle_args *dma_spec,
 
 	stm32_dma_set_config(chan, &cfg);
 
+	if (!dmadev->dma_buf || !chan->mchan.chan)
+		chan->use_mdma = false;
+
 	return c;
 }
 
@@ -1026,10 +1554,14 @@ MODULE_DEVICE_TABLE(of, stm32_dma_of_match);
 static int stm32_dma_probe(struct platform_device *pdev)
 {
 	struct stm32_dma_chan *chan;
+	struct stm32_dma_mdma *mchan;
 	struct stm32_dma_device *dmadev;
 	struct dma_device *dd;
 	const struct of_device_id *match;
-	struct resource *res;
+	struct device_node *np;
+	struct resource *res, sram_res;
+	resource_size_t size;
+	char name[4];
 	int i, ret;
 
 	match = of_match_device(stm32_dma_of_match, &pdev->dev);
@@ -1065,6 +1597,27 @@ static int stm32_dma_probe(struct platform_device *pdev)
 		reset_control_deassert(dmadev->rst);
 	}
 
+	/* Allocate and map dma buffer from SRAM area */
+	np = of_parse_phandle(pdev->dev.of_node, "memory-region", 0);
+	if (np) {
+		of_node_put(np);
+		ret = of_address_to_resource(np, 0, &sram_res);
+		if (ret) {
+			dev_err(&pdev->dev,
+				"Error parsing mem region: can't use MDMA\n");
+			goto end_of_sram_alloc;
+		}
+		dmadev->dma_buf = (dma_addr_t)sram_res.start;
+		size = resource_size(&sram_res);
+		dmadev->sram_size = size / STM32_DMA_MAX_CHANNELS;
+
+		dev_info(&pdev->dev, "SRAM phy = 0x%08x - SRAM size = 0x%08x\n",
+			 (u32)dmadev->dma_buf, (u32)size);
+	} else {
+		dev_info(&pdev->dev, "no dma pool: can't use MDMA\n");
+	}
+
+end_of_sram_alloc:
 	dma_cap_set(DMA_SLAVE, dd->cap_mask);
 	dma_cap_set(DMA_PRIVATE, dd->cap_mask);
 	dma_cap_set(DMA_CYCLIC, dd->cap_mask);
@@ -1100,6 +1653,16 @@ static int stm32_dma_probe(struct platform_device *pdev)
 		chan->id = i;
 		chan->vchan.desc_free = stm32_dma_desc_free;
 		vchan_init(&chan->vchan, dd);
+
+		mchan = &chan->mchan;
+		if (dmadev->dma_buf) {
+			snprintf(name, sizeof(name), "ch%d", chan->id);
+			mchan->chan = dma_request_slave_channel(dd->dev, name);
+			if (!mchan->chan)
+				dev_info(&pdev->dev,
+					 "can't request MDMA chan for %s\n",
+					 name);
+		}
 	}
 
 	ret = dma_async_device_register(dd);
@@ -1157,4 +1720,4 @@ static int __init stm32_dma_init(void)
 {
 	return platform_driver_probe(&stm32_dma_driver, stm32_dma_probe);
 }
-subsys_initcall(stm32_dma_init);
+device_initcall(stm32_dma_init);
