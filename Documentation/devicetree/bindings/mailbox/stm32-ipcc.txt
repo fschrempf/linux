@@ -1,0 +1,58 @@
+* STMicroelectronics STM32 IPCC (Inter-Processor Communication Controller)
+
+A mailbox is used to exchange messages between two processors.
+The IPCC block provides a non blocking signaling mechanism to post and
+retrieve messages in an atomic way.
+The IPCC block provides the signaling for 2*N buffers. N buffers in the
+direction from processor 0 to processor 1, and N buffers in the opposite
+direction. This allows i.e. N different message types in each direction.
+The mailbox buffers have to be located in a common memory, which is not part
+of the IPCC block.
+Number of buffers per processor (N) is defined in IPCC register.
+
+Required properties:
+- compatible: Should be "st,stm32-ipcc"
+- reg: Offset and length of the device's register set
+- clocks: The input clock of the IPCC instance
+- interrupts: Interrupt specifiers for ipcc, one for each
+  entry in interrupt-names.
+- interrupt-names: 2 interrupt lines per processor
+  rx buffer occupied => "rx?"
+  tx buffer free (ack) => "tx?"
+  2 processors per ipcc, where "?" is the processor index expressed
+  as one digit "0" or "1".
+- #mbox-cells: Must be 2
+  <&phandle proc buf_id>
+   phandle: Label name of controller
+   proc: Index of your processor O or 1
+   buf_id: Each processor buffer index (O to N)
+
+Optional properties:
+- wakeup-source: Flag to indicate this device can wake system (suspend/resume).
+- interrupt-names : Name associated with interrupt line. Should be "wakeup?" if
+  interrupt is to be used to wake system. 2 processors per ipcc, where "?"
+  is the processor index expressed as one digit "0" or "1".
+
+Example:
+	ipcc: mailbox@4c001000 {
+		compatible = "st,stm32-ipcc";
+		#mbox-cells = <2>;
+		reg = <0x4c001000 0x400>;
+		interrupts-extended = <&intc GIC_SPI 100 IRQ_TYPE_NONE>,
+				      <&intc GIC_SPI 101 IRQ_TYPE_NONE>,
+				      <&intc GIC_SPI 103 IRQ_TYPE_NONE>,
+				      <&intc GIC_SPI 104 IRQ_TYPE_NONE>,
+				      <&aiec 62 1>, <&aiec 61 1>;
+		interrupt-names = "rx0", "tx0", "rx1", "tx1",
+				  "wakeup0", "wakeup1";
+		clocks = <&rcc_clk IPCC>;
+		wakeup-source;
+		status = "disable";
+	}
+
+Client:
+	mbox_test1: mailbox_test@1 {
+		compatible = "mailbox-test";
+		mboxes = <&ipcc 0 0>, <&ipcc 1 0>;
+		mbox-names = "tx", "rx";
+	};
