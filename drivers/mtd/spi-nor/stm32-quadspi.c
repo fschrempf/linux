@@ -1,11 +1,26 @@
 /*
- * stm32_quadspi.c
+ * Driver for stm32 quadspi controller
  *
- * Copyright (C) 2017, Ludovic Barre
+ * Copyright (C) 2017, STMicroelectronics - All Rights Reserved
+ * Author(s): Ludovic Barre author <ludovic.barre@st.com>.
  *
- * License terms: GNU General Public License (GPL), version 2
+ * License terms: GPL V2.0.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License version 2 as published by
+ * the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more
+ * details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * This program. If not, see <http://www.gnu.org/licenses/>.
  */
 #include <linux/clk.h>
+#include <linux/dmaengine.h>
+#include <linux/dma-mapping.h>
 #include <linux/errno.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
@@ -113,6 +128,7 @@
 #define STM32_MAX_MMAP_SZ	SZ_256M
 #define STM32_MAX_NORCHIP	2
 
+#define STM32_QSPI_FIFO_SZ	32
 #define STM32_QSPI_FIFO_TIMEOUT_US 30000
 #define STM32_QSPI_BUSY_TIMEOUT_US 100000
 
@@ -124,10 +140,12 @@ struct stm32_qspi_flash {
 	u32 presc;
 	u32 read_mode;
 	bool registered;
+	u32 prefetch_limit;
 };
 
 struct stm32_qspi {
 	struct device *dev;
+	phys_addr_t phys_base;
 	void __iomem *io_base;
 	void __iomem *mm_base;
 	resource_size_t mm_size;
@@ -136,6 +154,10 @@ struct stm32_qspi {
 	u32 clk_rate;
 	struct stm32_qspi_flash flash[STM32_MAX_NORCHIP];
 	struct completion cmd_completion;
+	struct dma_chan *dma_chtx;
+	struct dma_chan *dma_chrx;
+	struct completion dma_completion;
+	struct sg_table dma_sgt;
 
 	/*
 	 * to protect device configuration, could be different between
@@ -148,6 +170,7 @@ struct stm32_qspi_cmd {
 	u8 addr_width;
 	u8 dummy;
 	bool tx_data;
+	bool tx_dma;
 	u8 opcode;
 	u32 framemode;
 	u32 qspimode;
@@ -255,6 +278,103 @@ static int stm32_qspi_tx_mm(struct stm32_qspi *qspi,
 	return 0;
 }
 
+static void stm32_qspi_dma_callback(void *arg)
+{
+	struct completion *dma_completion = arg;
+
+	complete(dma_completion);
+}
+
+static int stm32_qspi_tx_dma(struct stm32_qspi *qspi,
+			     const struct stm32_qspi_cmd *cmd)
+{
+	struct dma_async_tx_descriptor *desc;
+	enum dma_data_direction map_dir;
+	enum dma_transfer_direction dma_dir;
+	unsigned int dma_max_seg_size;
+	struct dma_chan *dma_ch;
+	dma_cookie_t cookie;
+	struct scatterlist *sg;
+	void *buf;
+	u32 cr, len, t_out;
+	int i, err, nents;
+
+	cr = readl_relaxed(qspi->io_base + QUADSPI_CR);
+
+	if (cmd->qspimode == CCR_FMODE_INDR) {
+		map_dir = DMA_FROM_DEVICE;
+		dma_dir = DMA_DEV_TO_MEM;
+		dma_ch = qspi->dma_chrx;
+
+	} else {
+		map_dir = DMA_TO_DEVICE;
+		dma_dir = DMA_MEM_TO_DEV;
+		dma_ch = qspi->dma_chtx;
+	}
+
+	/* the stm32 dma could tx MAX_DMA_BLOCK_LEN */
+	dma_max_seg_size = dma_get_max_seg_size(dma_ch->device->dev);
+	buf = cmd->buf;
+	len = cmd->len;
+	nents = DIV_ROUND_UP(len, dma_max_seg_size);
+
+	if (nents != qspi->dma_sgt.nents) {
+		sg_free_table(&qspi->dma_sgt);
+
+		err = sg_alloc_table(&qspi->dma_sgt, nents, GFP_KERNEL);
+		if (err)
+			return err;
+	}
+
+	for_each_sg(qspi->dma_sgt.sgl, sg, nents, i) {
+		size_t bytes = min_t(size_t, len, dma_max_seg_size);
+
+		sg_set_buf(sg, buf, bytes);
+		buf += bytes;
+		len -= bytes;
+	}
+
+	if (dma_map_sg(qspi->dev, qspi->dma_sgt.sgl, nents, map_dir) != nents)
+		return -ENOMEM;
+
+	desc = dmaengine_prep_slave_sg(dma_ch, qspi->dma_sgt.sgl, nents,
+				       dma_dir, DMA_PREP_INTERRUPT);
+	if (!desc) {
+		err = -ENOMEM;
+		goto out_unmap;
+	}
+
+	reinit_completion(&qspi->dma_completion);
+	desc->callback = stm32_qspi_dma_callback;
+	desc->callback_param = &qspi->dma_completion;
+	cookie = dmaengine_submit(desc);
+	err = dma_submit_error(cookie);
+	if (err)
+		goto out_unmap;
+
+	dma_async_issue_pending(dma_ch);
+
+	writel_relaxed(cr | CR_DMAEN, qspi->io_base + QUADSPI_CR);
+
+	t_out = nents * 1000;
+	if (!wait_for_completion_interruptible_timeout(&qspi->dma_completion,
+						       msecs_to_jiffies(t_out)))
+		err = -ETIMEDOUT;
+
+	if (dma_async_is_tx_complete(dma_ch, cookie,
+				     NULL, NULL) != DMA_COMPLETE)
+		err = -ETIMEDOUT;
+
+	if (err)
+		dmaengine_terminate_all(dma_ch);
+
+out_unmap:
+	writel_relaxed(cr & ~CR_DMAEN, qspi->io_base + QUADSPI_CR);
+	dma_unmap_sg(qspi->dev, qspi->dma_sgt.sgl, nents, map_dir);
+
+	return err;
+}
+
 static int stm32_qspi_tx(struct stm32_qspi *qspi,
 			 const struct stm32_qspi_cmd *cmd)
 {
@@ -263,6 +383,8 @@ static int stm32_qspi_tx(struct stm32_qspi *qspi,
 
 	if (cmd->qspimode == CCR_FMODE_MM)
 		return stm32_qspi_tx_mm(qspi, cmd);
+	else if (cmd->tx_dma && (qspi->dma_chrx || qspi->dma_chtx))
+		return stm32_qspi_tx_dma(qspi, cmd);
 
 	return stm32_qspi_tx_poll(qspi, cmd);
 }
@@ -272,6 +394,7 @@ static int stm32_qspi_send(struct stm32_qspi_flash *flash,
 {
 	struct stm32_qspi *qspi = flash->qspi;
 	u32 ccr, dcr, cr;
+	u32 last_byte;
 	int err;
 
 	err = stm32_qspi_wait_nobusy(qspi);
@@ -314,6 +437,10 @@ static int stm32_qspi_send(struct stm32_qspi_flash *flash,
 		if (err)
 			goto abort;
 		writel_relaxed(FCR_CTCF, qspi->io_base + QUADSPI_FCR);
+	} else {
+		last_byte = cmd->addr + cmd->len;
+		if (last_byte > flash->prefetch_limit)
+			goto abort;
 	}
 
 	return err;
@@ -322,7 +449,9 @@ abort:
 	cr = readl_relaxed(qspi->io_base + QUADSPI_CR) | CR_ABORT;
 	writel_relaxed(cr, qspi->io_base + QUADSPI_CR);
 
-	dev_err(qspi->dev, "%s abort err:%d\n", __func__, err);
+	if (err)
+		dev_err(qspi->dev, "%s abort err:%d\n", __func__, err);
+
 	return err;
 }
 
@@ -384,6 +513,7 @@ static ssize_t stm32_qspi_read(struct spi_nor *nor, loff_t from, size_t len,
 	cmd.addr_width = nor->addr_width;
 	cmd.addr = (u32)from;
 	cmd.tx_data = true;
+	cmd.tx_dma = true;
 	cmd.dummy = nor->read_dummy;
 	cmd.len = len;
 	cmd.buf = buf;
@@ -411,6 +541,7 @@ static ssize_t stm32_qspi_write(struct spi_nor *nor, loff_t to, size_t len,
 	cmd.addr_width = nor->addr_width;
 	cmd.addr = (u32)to;
 	cmd.tx_data = true;
+	cmd.tx_dma = true;
 	cmd.len = len;
 	cmd.buf = (void *)buf;
 	cmd.qspimode = CCR_FMODE_INDW;
@@ -550,6 +681,7 @@ static int stm32_qspi_flash_setup(struct stm32_qspi *qspi,
 	}
 
 	flash->fsize = FSIZE_VAL(mtd->size);
+	flash->prefetch_limit = mtd->size - STM32_QSPI_FIFO_SZ;
 
 	flash->read_mode = CCR_FMODE_MM;
 	if (mtd->size > qspi->mm_size)
@@ -565,8 +697,10 @@ static int stm32_qspi_flash_setup(struct stm32_qspi *qspi,
 
 	flash->registered = true;
 
-	dev_dbg(qspi->dev, "read mm:%s cs:%d bus:%d\n",
-		flash->read_mode == CCR_FMODE_MM ? "yes" : "no", cs_num, width);
+	dev_dbg(qspi->dev, "read mm:%s dma(rx:%s,tx:%s) cs:%d bus:%d\n",
+		flash->read_mode == CCR_FMODE_MM ? "yes" : "no",
+		qspi->dma_chrx ? "yes" : "no",
+		qspi->dma_chtx ? "yes" : "no", cs_num, width);
 
 	return 0;
 }
@@ -578,6 +712,53 @@ static void stm32_qspi_mtd_free(struct stm32_qspi *qspi)
 	for (i = 0; i < STM32_MAX_NORCHIP; i++)
 		if (qspi->flash[i].registered)
 			mtd_device_unregister(&qspi->flash[i].nor.mtd);
+}
+
+static void stm32_qspi_dma_setup(struct stm32_qspi *qspi)
+{
+	struct dma_slave_config dma_cfg;
+	struct device *dev = qspi->dev;
+	int ret;
+
+	memset(&dma_cfg, 0, sizeof(dma_cfg));
+
+	dma_cfg.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
+	dma_cfg.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
+	dma_cfg.src_addr = qspi->phys_base + QUADSPI_DR;
+	dma_cfg.dst_addr = qspi->phys_base + QUADSPI_DR;
+	dma_cfg.src_maxburst = 1;
+	dma_cfg.dst_maxburst = 1;
+	dma_cfg.device_fc = false;
+
+	qspi->dma_chrx = dma_request_slave_channel(dev, "rx");
+	if (qspi->dma_chrx) {
+		ret = dmaengine_slave_config(qspi->dma_chrx, &dma_cfg);
+		if (ret) {
+			dev_err(dev, "dma rx config failed\n");
+			dma_release_channel(qspi->dma_chrx);
+			qspi->dma_chrx = NULL;
+		}
+	}
+
+	qspi->dma_chtx = dma_request_slave_channel(dev, "tx");
+	if (qspi->dma_chtx) {
+		ret = dmaengine_slave_config(qspi->dma_chtx, &dma_cfg);
+		if (ret) {
+			dev_err(dev, "dma tx config failed\n");
+			dma_release_channel(qspi->dma_chtx);
+			qspi->dma_chtx = NULL;
+		}
+	}
+
+	init_completion(&qspi->dma_completion);
+}
+
+static void stm32_qspi_dma_free(struct stm32_qspi *qspi)
+{
+	if (qspi->dma_chtx)
+		dma_release_channel(qspi->dma_chtx);
+	if (qspi->dma_chrx)
+		dma_release_channel(qspi->dma_chrx);
 }
 
 static int stm32_qspi_probe(struct platform_device *pdev)
@@ -601,6 +782,8 @@ static int stm32_qspi_probe(struct platform_device *pdev)
 	qspi->io_base = devm_ioremap_resource(dev, res);
 	if (IS_ERR(qspi->io_base))
 		return PTR_ERR(qspi->io_base);
+
+	qspi->phys_base = res->start;
 
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "qspi_mm");
 	qspi->mm_base = devm_ioremap_resource(dev, res);
@@ -642,6 +825,7 @@ static int stm32_qspi_probe(struct platform_device *pdev)
 
 	qspi->dev = dev;
 	platform_set_drvdata(pdev, qspi);
+	stm32_qspi_dma_setup(qspi);
 	mutex_init(&qspi->lock);
 
 	for_each_available_child_of_node(dev->of_node, flash_np) {
@@ -657,7 +841,7 @@ static int stm32_qspi_probe(struct platform_device *pdev)
 err_flash:
 	mutex_destroy(&qspi->lock);
 	stm32_qspi_mtd_free(qspi);
-
+	stm32_qspi_dma_free(qspi);
 	clk_disable_unprepare(qspi->clk);
 	return ret;
 }
@@ -668,6 +852,8 @@ static int stm32_qspi_remove(struct platform_device *pdev)
 
 	/* disable qspi */
 	writel_relaxed(0, qspi->io_base + QUADSPI_CR);
+	stm32_qspi_dma_free(qspi);
+	sg_free_table(&qspi->dma_sgt);
 
 	stm32_qspi_mtd_free(qspi);
 	mutex_destroy(&qspi->lock);

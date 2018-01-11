@@ -1,0 +1,79 @@
+ST Microelectronics Flexible Memory Controller (FMC)
+NAND Interface
+
+Required properties:
+- compatible: "st,stm32mp1-fmc"
+- reg: Address range of the mtd chip
+- reg-names: Should contain the reg names "fmc_regs", "fmc_common"
+             and "fmc_attrib"
+- interrupts: The interrupt number
+- pinctrl-0: Standard Pinctrl phandle (see: pinctrl/pinctrl-bindings.txt)
+- clocks: Use common clock framework
+- resets: Reference to a reset controller asserting the FMC controller
+
+Optional properties:
+- dmas: DMA specifiers (see: dma/stm32-mdma.txt)
+- dma-names: Must be "rxtx" and "ecc"
+- nand-on-flash-bbt: see nand.txt
+- nand-ecc-strength: see nand.txt
+- nand-ecc-step-size: see nand.txt
+- st,fmc_bank_used: NAND bank to use, default bank 3
+- st,fmc_timings: array of 8 bytes for NAND timings. The meanings of
+  these bytes are:
+  byte 0 TCLR      : CLE to RE delay in number of AHB clock cycles, only 4 bits
+                     are valid. Zero means one clockcycle, 15 means 16 clock
+                     cycles.
+  byte 1 TAR       : ALE to RE delay, 4 bits are valid. Same format as TCLR.
+  byte 2 THIZ      : number of HCLK clock cycles during which the data bus is
+                     kept in Hi-Z (tristate) after the start of a write access.
+                     Only valid for write transactions. Zero means 1 cycle,
+                     255 means 256 cycles.
+  byte 3 TWAIT     : number of HCLK clock cycles to assert the command to the
+                     NAND flash in response to SMWAITn. Zero means 1 cycle,
+                     255 means 256 cycles.
+  byte 4 THOLD_MEM : common memory space timing
+                     number of HCLK clock cycles to hold the address (and data
+                     when writing) after the command deassertion. Zero means
+                     1 cycle, 255 means 256 cycles.
+  byte 5 TSET_MEM  : common memory space timing
+                     number of HCLK clock cycles to assert the address before
+                     the command is asserted. Zero means 1 cycle, 255 means 256
+                     cycles.
+  byte 6 THOLD_ATT : attribute memory space timing
+                     number of HCLK clock cycles to hold the address (and data
+                     when writing) after the command deassertion. Zero means
+                     1 cycle, 255 means 256 cycles.
+  byte 7 TSET_ATT  : attribute memory space timing
+                     number of HCLK clock cycles to assert the address before
+                     the command is asserted. Zero means 1 cycle, 255 means 256
+                     cycles.
+
+The following ECC strength and step size are currently supported:
+ - nand-ecc-strength = <1>, nand-ecc-step-size = <512> (HAMMING)
+ - nand-ecc-strength = <4>, nand-ecc-step-size = <512> (BCH4)
+ - nand-ecc-strength = <8>, nand-ecc-step-size = <512> (BCH8)
+
+Example:
+
+	fmc: flash@58002000 {
+		compatible = "st,stm32mp1-fmc";
+		reg = <0x58002000 0x1000>, <0x80000000 0x40000>,
+		      <0x88000000 0x40000>;
+		reg-names = "fmc_regs", "fmc_common";
+		interrupts = <GIC_SPI 48 IRQ_TYPE_NONE>;
+		dmas = <&mdma1 20 0x10 0x12000a0a 0x0 0x0 0>,
+		       <&mdma1 21 0x10 0x12000a0a 0x0 0x0 0>;
+		dma-names = "rxtx", "ecc";
+		clocks = <&rcc FMC_K>;
+		resets = <&rcc FMC_R>;
+
+		nand-on-flash-bbt;
+		nand-ecc-strength = <8>;
+		nand-ecc-step-size = <512>;
+		st,fmc_timings = /bits/ 8 <2 2 1 7 1 0 104 25>;
+		st,fmc_bank_used = <3>;
+
+		partition@0 {
+			...
+		};
+	};

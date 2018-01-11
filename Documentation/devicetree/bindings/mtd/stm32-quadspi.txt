@@ -10,6 +10,8 @@ Required properties:
 - A pinctrl must be defined to set pins in mode of operation for QSPI transfer
 
 Optional properties:
+- dmas: DMA specifier for tx and rx
+- dma-names: DMA request names should include "tx" and "rx" if present.
 - resets: must contain the phandle to the reset controller.
 
 A spi flash must be a child of the nor_flash node and could have some
@@ -29,6 +31,9 @@ qspi: spi@a0001000 {
 	reg = <0xa0001000 0x1000>, <0x90000000 0x10000000>;
 	reg-names = "qspi", "qspi_mm";
 	interrupts = <91>;
+	dmas = <&dma2 7 3 0x416 0x0>
+	       <&dma2 7 3 0x416 0x0;
+	dma-names = "tx", "rx";
 	resets = <&rcc STM32F4_AHB3_RESET(QSPI)>;
 	clocks = <&rcc 0 STM32F4_AHB3_CLOCK(QSPI)>;
 	pinctrl-names = "default";
