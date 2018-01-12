@@ -775,6 +775,13 @@ config STM32_WATCHDOG
 	  To compile this driver as a module, choose M here: the
 	  module will be called stm32_iwdg.
 
+config STPMU1_WATCHDOG
+	tristate "STPMU1 PMIC watchdog support"
+	depends on MFD_STPMU1
+	select WATCHDOG_CORE
+	help
+	  Say Y here to include STPMU1 PMIC watchdog support.
+
 config UNIPHIER_WATCHDOG
 	tristate "UniPhier watchdog support"
 	depends on ARCH_UNIPHIER || COMPILE_TEST
