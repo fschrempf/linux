@@ -1,0 +1,40 @@
+STMicroelectronics STM32 USB HS PHY controller
+
+The STM32 USBPHYC block contains a dual port High Speed UTMI+ PHY
+USB2_2PHY_40lp50A and a UTMI switch.
+It controls PHY configuration and status, and the UTMI+ switch that selects
+either OTG or HOST controller for the second PHY port. It also sets PLL
+configuration.
+
+USBPHYC
+  |_ PLL
+  |
+  |_ PHY port#1 _________________ HOST controller
+  |                                      |
+  |_ PHY port#2_______                   |
+  |                   |_                 |
+  |_ UTMI switch_____/ 1|________________|
+                    |   |________________
+                     \_0|                |
+		                  OTG controller
+
+Required properties:
+- compatible: must be "st,stm32mp1-usbphyc"
+- reg: address and length of the usb phy control register set
+- clocks: phandle + clock specifier for the PLL phy clock
+
+Optional properties:
+- assigned-clocks: phandle + clock specifier for the PLL phy clock
+- assigned-clock-parents: the PLL phy clock parent
+- resets: phandle + reset specifier
+- st,port2-switch-to-host: select HOST controller on UTMI switch for port#2
+
+
+Example:
+		usbphyc: usbphyc@5a006000 {
+			compatible = "st,stm32mp1-usbphyc";
+			reg = <0x5a006000 0x1000>;
+			clocks = <&rcc_clk USBPHY_K>;
+			resets = <&rcc_rst USBPHY_R>;
+			st,port2-switch-to-host;
+		};
