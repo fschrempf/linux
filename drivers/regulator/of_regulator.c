@@ -20,6 +20,7 @@
 #include "internal.h"
 
 static const char *const regulator_states[PM_SUSPEND_MAX + 1] = {
+	[PM_SUSPEND_STANDBY]	= "regulator-state-standby",
 	[PM_SUSPEND_MEM]	= "regulator-state-mem",
 	[PM_SUSPEND_MAX]	= "regulator-state-disk",
 };
@@ -143,6 +144,9 @@ static void of_get_regulation_constraints(struct device_node *np,
 
 	for (i = 0; i < ARRAY_SIZE(regulator_states); i++) {
 		switch (i) {
+		case PM_SUSPEND_STANDBY:
+			suspend_state = &constraints->state_standby;
+			break;
 		case PM_SUSPEND_MEM:
 			suspend_state = &constraints->state_mem;
 			break;
@@ -151,7 +155,6 @@ static void of_get_regulation_constraints(struct device_node *np,
 			break;
 		case PM_SUSPEND_ON:
 		case PM_SUSPEND_TO_IDLE:
-		case PM_SUSPEND_STANDBY:
 		default:
 			continue;
 		}
@@ -181,6 +184,9 @@ static void of_get_regulation_constraints(struct device_node *np,
 		else if (of_property_read_bool(suspend_np,
 					"regulator-off-in-suspend"))
 			suspend_state->disabled = true;
+		else if (of_property_read_bool(
+			 suspend_np, "regulator-unchanged-in-suspend"))
+			suspend_state->unchanged = true;
 
 		if (!of_property_read_u32(suspend_np,
 					"regulator-suspend-microvolt", &pval))

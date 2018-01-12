@@ -1,0 +1,22 @@
+protection consumer bindings
+
+Required properties:
+- compatible: should be "protection-consumer"
+- protection-supply: phandle to the parent supply/regulator node to protect
+
+Optional properties:
+--------------------
+- interrupt-parent: phandle to the parent interrupt controller
+- interrupts: interrupt line to use as a failure detection
+
+Example:
+
+	vcc_protection {
+		compatible = "protection-consumer";
+		protection-supply = <&vcc>;
+		status = "okay";
+
+		interrupts = <15 2>;
+		interrupt-parent = <&gpiof>;
+	};
+

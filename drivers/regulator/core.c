@@ -739,7 +739,7 @@ static int suspend_set_state(struct regulator_dev *rdev,
 	 * only warn if the driver implements set_suspend_voltage or
 	 * set_suspend_mode callback.
 	 */
-	if (!rstate->enabled && !rstate->disabled) {
+	if (!rstate->enabled && !rstate->disabled && !rstate->unchanged) {
 		if (rdev->desc->ops->set_suspend_voltage ||
 		    rdev->desc->ops->set_suspend_mode)
 			rdev_warn(rdev, "No configuration\n");
@@ -755,6 +755,16 @@ static int suspend_set_state(struct regulator_dev *rdev,
 		ret = rdev->desc->ops->set_suspend_enable(rdev);
 	else if (rstate->disabled && rdev->desc->ops->set_suspend_disable)
 		ret = rdev->desc->ops->set_suspend_disable(rdev);
+	else if (rstate->unchanged) {
+		if (_regulator_is_enabled(rdev) &&
+		    rdev->desc->ops->set_suspend_enable)
+			ret = rdev->desc->ops->set_suspend_enable(rdev);
+		else if (!_regulator_is_enabled(rdev) &&
+			 rdev->desc->ops->set_suspend_disable)
+			ret = rdev->desc->ops->set_suspend_disable(rdev);
+		else
+			ret = 0;
+	}
 	else /* OK if set_suspend_enable or set_suspend_disable is NULL */
 		ret = 0;
 
