@@ -51,4 +51,12 @@ config RPMSG_VIRTIO
 	select RPMSG
 	select VIRTIO
 
+config RPMSG_TTY
+	tristate "RPMSG tty driver"
+	depends on RPMSG
+	help
+	  Say y here to export rpmsg endpoints as tty console n, usually found
+	  ind /dev/ttyRPMSG. This make it possible for user-spage programs to
+	  send and receive rpmsg message as a standard tty protocol.
+
 endmenu
