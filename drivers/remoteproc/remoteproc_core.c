@@ -40,6 +40,7 @@
 #include <linux/crc32.h>
 #include <linux/virtio_ids.h>
 #include <linux/virtio_ring.h>
+#include <linux/of_platform.h>
 #include <asm/byteorder.h>
 
 #include "remoteproc_internal.h"
@@ -770,12 +771,12 @@ static int rproc_handle_resources(struct rproc *rproc, int len,
 	return ret;
 }
 
-static int rproc_probe_subdevices(struct rproc *rproc)
+static int rproc_probe_subdevices(struct list_head *head)
 {
 	struct rproc_subdev *subdev;
 	int ret;
 
-	list_for_each_entry(subdev, &rproc->subdevs, node) {
+	list_for_each_entry(subdev, head, node) {
 		ret = subdev->probe(subdev);
 		if (ret)
 			goto unroll_registration;
@@ -784,17 +785,17 @@ static int rproc_probe_subdevices(struct rproc *rproc)
 	return 0;
 
 unroll_registration:
-	list_for_each_entry_continue_reverse(subdev, &rproc->subdevs, node)
+	list_for_each_entry_continue_reverse(subdev, head, node)
 		subdev->remove(subdev);
 
 	return ret;
 }
 
-static void rproc_remove_subdevices(struct rproc *rproc)
+static void rproc_remove_subdevices(struct list_head *head)
 {
 	struct rproc_subdev *subdev;
 
-	list_for_each_entry_reverse(subdev, &rproc->subdevs, node)
+	list_for_each_entry_reverse(subdev, head, node)
 		subdev->remove(subdev);
 }
 
@@ -881,20 +882,27 @@ static int rproc_start(struct rproc *rproc, const struct firmware *fw)
 		rproc->table_ptr = loaded_table;
 	}
 
+	/* early probe any subdevices for the remote processor */
+	ret = rproc_probe_subdevices(&rproc->early_subdevs);
+	if (ret) {
+		dev_err(dev, "failed to early probe subdevices for %s: %d\n",
+			rproc->name, ret);
+		return ret;
+	}
+
 	/* power up the remote processor */
 	ret = rproc->ops->start(rproc);
 	if (ret) {
 		dev_err(dev, "can't start rproc %s: %d\n", rproc->name, ret);
-		return ret;
+		goto remove_early;
 	}
 
 	/* probe any subdevices for the remote processor */
-	ret = rproc_probe_subdevices(rproc);
+	ret = rproc_probe_subdevices(&rproc->subdevs);
 	if (ret) {
 		dev_err(dev, "failed to probe subdevices for %s: %d\n",
 			rproc->name, ret);
-		rproc->ops->stop(rproc);
-		return ret;
+		goto stop_rproc;
 	}
 
 	rproc->state = RPROC_RUNNING;
@@ -902,6 +910,12 @@ static int rproc_start(struct rproc *rproc, const struct firmware *fw)
 	dev_info(dev, "remote processor %s is now up\n", rproc->name);
 
 	return 0;
+
+stop_rproc:
+	rproc->ops->stop(rproc);
+remove_early:
+	rproc_remove_subdevices(&rproc->early_subdevs);
+	return ret;
 }
 
 /*
@@ -1019,7 +1033,7 @@ static int rproc_stop(struct rproc *rproc)
 	int ret;
 
 	/* remove any subdevices for the remote processor */
-	rproc_remove_subdevices(rproc);
+	rproc_remove_subdevices(&rproc->subdevs);
 
 	/* power off the remote processor */
 	ret = rproc->ops->stop(rproc);
@@ -1027,6 +1041,9 @@ static int rproc_stop(struct rproc *rproc)
 		dev_err(dev, "can't stop rproc: %d\n", ret);
 		return ret;
 	}
+
+	/* remove any early-probed subdevices for the remote processor */
+	rproc_remove_subdevices(&rproc->early_subdevs);
 
 	/* if in crash state, unlock crash handler */
 	if (rproc->state == RPROC_CRASHED)
@@ -1327,6 +1344,11 @@ int rproc_add(struct rproc *rproc)
 			return ret;
 	}
 
+	/* add resource manager device */
+	ret = devm_of_platform_populate(dev->parent);
+	if (ret < 0)
+		return ret;
+
 	/* expose to rproc_get_by_phandle users */
 	mutex_lock(&rproc_list_mutex);
 	list_add(&rproc->node, &rproc_list);
@@ -1457,6 +1479,7 @@ struct rproc *rproc_alloc(struct device *dev, const char *name,
 	INIT_LIST_HEAD(&rproc->traces);
 	INIT_LIST_HEAD(&rproc->rvdevs);
 	INIT_LIST_HEAD(&rproc->subdevs);
+	INIT_LIST_HEAD(&rproc->early_subdevs);
 
 	INIT_WORK(&rproc->crash_handler, rproc_crash_handler_work);
 	init_completion(&rproc->crash_comp);
@@ -1534,6 +1557,8 @@ int rproc_del(struct rproc *rproc)
 	list_del(&rproc->node);
 	mutex_unlock(&rproc_list_mutex);
 
+	of_platform_depopulate(rproc->dev.parent);
+
 	device_del(&rproc->dev);
 
 	return 0;
@@ -1560,9 +1585,32 @@ void rproc_add_subdev(struct rproc *rproc,
 EXPORT_SYMBOL(rproc_add_subdev);
 
 /**
+ * rproc_add_early_subdev() - add an early subdevice to a remoteproc
+ * @rproc: rproc handle to add the subdevice to
+ * @subdev: subdev handle to register
+ * @probe: function to call before the rproc boots
+ * @remove: function to call after the rproc shuts down
+ *
+ * This function differs from rproc_add_subdev() in the sense that the added
+ * subdevices are probed BEFORE the rproc boots.
+ */
+void rproc_add_early_subdev(struct rproc *rproc,
+			    struct rproc_subdev *subdev,
+			    int (*probe)(struct rproc_subdev *subdev),
+			    void (*remove)(struct rproc_subdev *subdev))
+{
+	subdev->probe = probe;
+	subdev->remove = remove;
+
+	list_add_tail(&subdev->node, &rproc->early_subdevs);
+}
+EXPORT_SYMBOL(rproc_add_early_subdev);
+
+/**
  * rproc_remove_subdev() - remove a subdevice from a remoteproc
  * @rproc: rproc handle to remove the subdevice from
- * @subdev: subdev handle, previously registered with rproc_add_subdev()
+ * @subdev: subdev handle, previously registered with rproc_add_subdev() or
+ *          rproc_add_early_subdev()
  */
 void rproc_remove_subdev(struct rproc *rproc, struct rproc_subdev *subdev)
 {

@@ -402,6 +402,7 @@ enum rproc_crash_type {
  * @bootaddr: address of first instruction to boot rproc with (optional)
  * @rvdevs: list of remote virtio devices
  * @subdevs: list of subdevices, to following the running state
+ * @early_subdevs: list of early-probed subdevices
  * @notifyids: idr for dynamically assigning rproc-wide unique notify ids
  * @index: index of this rproc device
  * @crash_handler: workqueue for handling a crash
@@ -433,6 +434,7 @@ struct rproc {
 	u32 bootaddr;
 	struct list_head rvdevs;
 	struct list_head subdevs;
+	struct list_head early_subdevs;
 	struct idr notifyids;
 	int index;
 	struct work_struct crash_handler;
@@ -540,6 +542,11 @@ void rproc_add_subdev(struct rproc *rproc,
 		      struct rproc_subdev *subdev,
 		      int (*probe)(struct rproc_subdev *subdev),
 		      void (*remove)(struct rproc_subdev *subdev));
+
+void rproc_add_early_subdev(struct rproc *rproc,
+			    struct rproc_subdev *subdev,
+			    int (*probe)(struct rproc_subdev *subdev),
+			    void (*remove)(struct rproc_subdev *subdev));
 
 void rproc_remove_subdev(struct rproc *rproc, struct rproc_subdev *subdev);
 
