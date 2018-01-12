@@ -180,6 +180,12 @@ enum m_can_mram_cfg {
 #define PSR_EP		BIT(5)
 #define PSR_LEC_MASK	0x7
 
+/* Transmitter Delay Compensation Register (TDCR) */
+#define TDCR_TDCO_SHIFT	8
+#define TDCR_TDCO_MASK	GENMASK(14, 8)
+#define TDCR_TDCF_SHIFT	0
+#define TDCR_TDCF_MASK	GENMASK(6, 0)
+
 /* Interrupt Register(IR) */
 #define IR_ALL_INT	0xffffffff
 
@@ -975,7 +981,7 @@ static int m_can_set_bittiming(struct net_device *dev)
 	struct m_can_priv *priv = netdev_priv(dev);
 	const struct can_bittiming *bt = &priv->can.bittiming;
 	const struct can_bittiming *dbt = &priv->can.data_bittiming;
-	u16 brp, sjw, tseg1, tseg2;
+	u16 brp, sjw, tseg1, tseg2, tdco;
 	u32 reg_btp;
 
 	brp = bt->brp - 1;
@@ -994,6 +1000,14 @@ static int m_can_set_bittiming(struct net_device *dev)
 		reg_btp = (brp << DBTP_DBRP_SHIFT) | (sjw << DBTP_DSJW_SHIFT) |
 			(tseg1 << DBTP_DTSEG1_SHIFT) |
 			(tseg2 << DBTP_DTSEG2_SHIFT);
+
+		if ((priv->version > 30) && (dbt->bitrate > 2500000)) {
+			reg_btp |= DBTP_TDC;
+			tdco = dbt->sjw + dbt->prop_seg + dbt->phase_seg1;
+			tdco = tdco * dbt->brp;
+			m_can_write(priv, M_CAN_TDCR, tdco << TDCR_TDCO_SHIFT);
+		}
+
 		m_can_write(priv, M_CAN_DBTP, reg_btp);
 	}
 

@@ -1,0 +1,59 @@
+VeriSilicon gcnano GPU integration into STMicroelectronics platform
+
+- gcnano: VeriSilicon gcnano GPU ip
+  Required properties:
+  - compatible: "st,gcnano"
+  - reg:
+        Physical base address of the ip registers and length of memory mapped
+        region.
+  - contiguous-area:
+        Reserved memory region (contiguous memory region) used by
+        the VeriSilicon software stack (minimum is 32MB, recommended is greater
+        than 192MB). The size of the contiguous area depends on the display
+        resolution, the color depth.
+  - interrupts:
+        gcnano interrupt for the 3D pipeline
+  - interrupt-names:
+        names of the interrupts listed in interrupts property in
+  - clocks:
+        clocks to be managed by the driver
+  - clock-names:
+        names of the clocks listed by clocks property in the same order
+  - resets:
+        reset signal of the gcnano IP
+  - status:
+        either "okay" or "disabled"
+
+Device node example:
+
+/ {
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		gcnano_reserved: gpu@f8000000 {
+			reg = <0xf8000000 0x8000000>;
+			no-map;
+		};
+	};
+
+	soc {
+
+		...
+
+		gcnano: gcnano@59000000 {
+			compatible = "st,gcnano";
+			reg = <0x59000000 0x800>;
+			interrupts = <GIC_SPI 109 IRQ_TYPE_NONE>;
+			interrupt-names = "irq_3d";
+			clocks = <&rcc_clk GPU>, <&rcc_clk GPU_K>;
+			clock-names = "clk_3d_ahb" ,"clk_3d_clk2x";
+			resets = <&rcc_rst GPU_R>;
+			status = "disable";
+		};
+
+		...
+
+	};
+};

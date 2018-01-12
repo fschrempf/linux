@@ -1,0 +1,54 @@
+STMicroelectronics STM32MP1 Power Management Controller
+=======================================================
+
+The PWR IP is responsible for handling the power related resources such as
+clocks, power supplies and resets.
+
+Required properties:
+- compatible should be: "st,stm32mp1-pwr", "st,stm32-pwr"
+- reg: should be register base and length as documented in the
+  datasheet
+- system-power-controller: this IP handles the power resources
+- interrupts: contains the references to the PWR wake-up interrupt and the
+  generic interrupt
+- st,sysrcc: should be a phandle of the rcc node.
+- clocks: clock phandle of phyclk for ddr subsystem
+- clock-names: should be "phyclk"
+
+Optional Properties:
+- pwr-supply: main soc power supply
+- Kernel power mode nodes:
+  - standby_state: corresppond to PM_SUSPEND_STANDBY mode
+  - suspend_to_ram_state: correspond to PM_SUSPEND_MEM mode
+
+  in each mode we can overload ddr, regulator and soc mode :
+  ddr_mode	 : 0 -> Self Refresh, 1 -> OFF
+  regulator_mode : 2 -> PM_SUSPEND_STANDBY, 3 --> PM_SUSPEND_MEM, 4 --> PM_SUSPEND_MAX
+  soc_power_mode : 0 -> CSTOP, 1 -> CSTANDBY, 2 -> LPSTOP
+
+Example:
+
+	pwr: pwr@50001000 {
+		compatible = "st,stm32mp1-pwr", "st,stm32-pwr", "syscon", "simple-mfd";
+		reg = <0x50001000 0x400>;
+		system-power-controller;
+		interrupts = <GIC_SPI 149 IRQ_TYPE_NONE>,
+			     <GIC_SPI 148 IRQ_TYPE_NONE>;
+
+		st,sysrcc = <&rcc>;
+		pwr-supply = <&vdd>;
+		clocks = <&rcc_clk PLL2_R>;
+		clock-names = "phyclk";
+
+		standby_state {
+			ddr_mode       = <0>;
+			regulator_mode = <2>;
+			soc_power_mode = <0>;
+		};
+
+		suspend_to_ram_state {
+			ddr_mode       = <0>;
+			regulator_mode = <3>;
+			soc_power_mode = <1>;
+		};
+	};
