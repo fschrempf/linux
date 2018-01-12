@@ -4232,6 +4232,9 @@ int stmmac_dvr_probe(struct device *device,
 		goto error_netdev_register;
 	}
 
+	device_init_wakeup(device, 1);
+	device_set_wakeup_enable(device, true);
+
 	return ret;
 
 error_netdev_register:
@@ -4311,7 +4314,9 @@ int stmmac_suspend(struct device *dev)
 	stmmac_disable_all_queues(priv);
 
 	/* Stop TX/RX DMA */
-	stmmac_stop_all_dma(priv);
+// Need to discuss with SNPS about that (new in GMAC 4.2A)
+/*        priv->hw->dma->stop_tx(priv->ioaddr);*/
+/*        priv->hw->dma->stop_rx(priv->ioaddr);*/
 
 	/* Enable Power down mode by programming the PMT regs */
 	if (device_may_wakeup(priv->device)) {

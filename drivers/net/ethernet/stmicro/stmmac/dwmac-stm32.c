@@ -19,14 +19,22 @@
 #include <linux/regmap.h>
 #include <linux/slab.h>
 #include <linux/stmmac.h>
+#include <linux/pm_wakeirq.h>
 
 #include "stmmac_platform.h"
 
-#define MII_PHY_SEL_MASK	BIT(23)
+#define MII_PHY_SEL_MASK	GENMASK(23, 21)
+#define MII_PHY_CLK_SEL_MASK	GENMASK(20, 16)
+
 
 struct stm32_dwmac {
+	struct clk *clk_ethmac_k;
 	struct clk *clk_tx;
 	struct clk *clk_rx;
+	struct clk *clk_ck;
+	struct clk *clk_ethstp;
+	struct clk *syscfg_clk;
+	int irq_pwr_wakeup;
 	u32 mode_reg;		/* MAC glue-logic mode register */
 	struct regmap *regmap;
 	u32 speed;
@@ -37,35 +45,110 @@ static int stm32_dwmac_init(struct plat_stmmacenet_data *plat_dat)
 	struct stm32_dwmac *dwmac = plat_dat->bsp_priv;
 	u32 reg = dwmac->mode_reg;
 	u32 val;
+	u32 val2;
 	int ret;
 
-	val = (plat_dat->interface == PHY_INTERFACE_MODE_MII) ? 0 : 1;
-	ret = regmap_update_bits(dwmac->regmap, reg, MII_PHY_SEL_MASK, val);
+	if (plat_dat->interface == PHY_INTERFACE_MODE_MII) {
+		pr_debug("init for MII\n");
+		val = 0;
+		val2 = 0x10;  // SYSCFG->PMCR (bit (20): ETH_SELMII)
+	} else if (plat_dat->interface == PHY_INTERFACE_MODE_RMII) {
+		pr_debug("init for RMII\n");
+		val = 4;
+		val2 = 0;
+	} else if (plat_dat->interface == PHY_INTERFACE_MODE_GMII) {
+		pr_debug("init for GMII\n");
+		val = 0;
+		val2 = 1;
+	} else if (plat_dat->interface == PHY_INTERFACE_MODE_RGMII) {
+		pr_debug("init for RGMII\n");
+		val = 1;
+		val2 = 0;
+	} else {
+		pr_err("NO interface defined!\n");
+		return -EINVAL;
+	}
+
+	ret = regmap_update_bits(dwmac->regmap, reg,
+				 MII_PHY_SEL_MASK, (val << 21));
+	if (ret)
+		return ret;
+
+	ret = regmap_update_bits(dwmac->regmap, reg,
+				 MII_PHY_CLK_SEL_MASK, (val2 << 16));
+	if (ret)
+		return ret;
+
+	ret = clk_prepare_enable(dwmac->clk_ethmac_k);
 	if (ret)
 		return ret;
 
 	ret = clk_prepare_enable(dwmac->clk_tx);
-	if (ret)
+	if (ret) {
+		clk_disable_unprepare(dwmac->clk_ethmac_k);
 		return ret;
+	}
 
 	ret = clk_prepare_enable(dwmac->clk_rx);
-	if (ret)
+	if (ret) {
 		clk_disable_unprepare(dwmac->clk_tx);
+		clk_disable_unprepare(dwmac->clk_ethmac_k);
+		return ret;
+	}
+
+	ret = clk_prepare_enable(dwmac->clk_ck);
+	if (ret) {
+		clk_disable_unprepare(dwmac->clk_rx);
+		clk_disable_unprepare(dwmac->clk_tx);
+		clk_disable_unprepare(dwmac->clk_ethmac_k);
+		return ret;
+	}
+
+	ret = clk_prepare_enable(dwmac->syscfg_clk);
+	if (ret) {
+		clk_disable_unprepare(dwmac->clk_ck);
+		clk_disable_unprepare(dwmac->clk_rx);
+		clk_disable_unprepare(dwmac->clk_tx);
+		clk_disable_unprepare(dwmac->clk_ethmac_k);
+		return ret;
+	}
+
+	ret = clk_prepare_enable(dwmac->clk_ethstp);
+	if (ret) {
+		clk_disable_unprepare(dwmac->syscfg_clk);
+		clk_disable_unprepare(dwmac->clk_ck);
+		clk_disable_unprepare(dwmac->clk_rx);
+		clk_disable_unprepare(dwmac->clk_tx);
+		clk_disable_unprepare(dwmac->clk_ethmac_k);
+	}
 
 	return ret;
 }
 
 static void stm32_dwmac_clk_disable(struct stm32_dwmac *dwmac)
 {
+	clk_disable_unprepare(dwmac->clk_ethmac_k);
 	clk_disable_unprepare(dwmac->clk_tx);
-	clk_disable_unprepare(dwmac->clk_rx);
+//	clk_disable_unprepare(dwmac->clk_rx);
+	clk_disable_unprepare(dwmac->clk_ck);
+	clk_disable_unprepare(dwmac->clk_ethstp);
+	clk_disable_unprepare(dwmac->syscfg_clk);
 }
 
 static int stm32_dwmac_parse_data(struct stm32_dwmac *dwmac,
 				  struct device *dev)
 {
 	struct device_node *np = dev->of_node;
+	struct platform_device *pdev = to_platform_device(dev);
+
 	int err;
+
+	/*  Get ETHMAC_K clocks */
+	dwmac->clk_ethmac_k = devm_clk_get(dev, "ethmac_k");
+	if (IS_ERR(dwmac->clk_ethmac_k)) {
+		dev_err(dev, "No ethmac_k clock provided...\n");
+		return PTR_ERR(dwmac->clk_ethmac_k);
+	}
 
 	/*  Get TX/RX clocks */
 	dwmac->clk_tx = devm_clk_get(dev, "mac-clk-tx");
@@ -78,6 +161,26 @@ static int stm32_dwmac_parse_data(struct stm32_dwmac *dwmac,
 		dev_err(dev, "No rx clock provided...\n");
 		return PTR_ERR(dwmac->clk_rx);
 	}
+	/*  to update and change naming */
+	dwmac->clk_ck = devm_clk_get(dev, "mac-clk-ck");
+	if (IS_ERR(dwmac->clk_ck)) {
+		dev_err(dev, "No ck clock provided...\n");
+		return PTR_ERR(dwmac->clk_ck);
+	}
+
+	/*  to update and change naming */
+	dwmac->clk_ethstp = devm_clk_get(dev, "ethstp");
+	if (IS_ERR(dwmac->clk_ethstp)) {
+		dev_err(dev, "No ck clock provided...\n");
+		return PTR_ERR(dwmac->clk_ethstp);
+	}
+
+	/*  to update and change naming */
+	dwmac->syscfg_clk = devm_clk_get(dev, "syscfg-clk");
+	if (IS_ERR(dwmac->syscfg_clk)) {
+		dev_err(dev, "No ck clock provided...\n");
+		return PTR_ERR(dwmac->syscfg_clk);
+	}
 
 	/* Get mode register */
 	dwmac->regmap = syscon_regmap_lookup_by_phandle(np, "st,syscon");
@@ -85,8 +188,23 @@ static int stm32_dwmac_parse_data(struct stm32_dwmac *dwmac,
 		return PTR_ERR(dwmac->regmap);
 
 	err = of_property_read_u32_index(np, "st,syscon", 1, &dwmac->mode_reg);
-	if (err)
+	if (err) {
 		dev_err(dev, "Can't get sysconfig mode offset (%d)\n", err);
+		return err;
+	}
+
+	/* Get IRQ information early to have an ability to ask for deferred
+	 * probe if needed before we went too far with resource allocation.
+	 */
+	dwmac->irq_pwr_wakeup = platform_get_irq_byname(pdev,
+							"stm32_pwr_wakeup");
+	if (dwmac->irq_pwr_wakeup < 0) {
+		if (dwmac->irq_pwr_wakeup != -EPROBE_DEFER)
+			dev_err(dev,
+				"STM32 PWR WAKEUP IRQ configuration not found\n");
+
+		return dwmac->irq_pwr_wakeup;
+	}
 
 	return err;
 }
@@ -135,6 +253,8 @@ err_clk_disable:
 err_remove_config_dt:
 	stmmac_remove_config_dt(pdev, plat_dat);
 
+	ret = dev_pm_set_dedicated_wake_irq(&pdev->dev, dwmac->irq_pwr_wakeup);
+
 	return ret;
 }
 
@@ -152,12 +272,12 @@ static int stm32_dwmac_remove(struct platform_device *pdev)
 #ifdef CONFIG_PM_SLEEP
 static int stm32_dwmac_suspend(struct device *dev)
 {
-	struct net_device *ndev = dev_get_drvdata(dev);
-	struct stmmac_priv *priv = netdev_priv(ndev);
+//	struct net_device *ndev = dev_get_drvdata(dev);
+//	struct stmmac_priv *priv = netdev_priv(ndev);
 	int ret;
 
 	ret = stmmac_suspend(dev);
-	stm32_dwmac_clk_disable(priv->plat->bsp_priv);
+//	stm32_dwmac_clk_disable(priv->plat->bsp_priv);
 
 	return ret;
 }
