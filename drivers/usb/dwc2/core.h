@@ -427,6 +427,10 @@ enum dwc2_ep0_state {
  *			register.
  *			0 - Deactivate the transceiver (default)
  *			1 - Activate the transceiver
+ * @activate_stm_id_detection: Activate external ID pin level detection
+ *			using GGPIO register.
+ *			0 - Deactivate the external level detection (default)
+ *			1 - Activate the external level detection
  * @g_dma:              Enables gadget dma usage (default: autodetect).
  * @g_dma_desc:         Enables gadget descriptor DMA (default: autodetect).
  * @g_rx_fifo_size:	The periodic rx fifo size for the device, in
@@ -482,6 +486,7 @@ struct dwc2_core_params {
 	bool external_id_pin_ctl;
 	bool hibernation;
 	bool activate_stm_fs_transceiver;
+	bool activate_stm_id_detection;
 	u16 max_packet_count;
 	u32 max_transfer_size;
 	u32 ahbcfg;
@@ -913,6 +918,7 @@ struct dwc2_hsotg {
 	struct usb_phy *uphy;
 	struct dwc2_hsotg_plat *plat;
 	struct regulator_bulk_data supplies[DWC2_NUM_SUPPLIES];
+	struct regulator *vbus_supply;
 	u32 phyif;
 
 	spinlock_t lock;

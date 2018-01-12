@@ -359,6 +359,32 @@ static void dwc2_gusbcfg_init(struct dwc2_hsotg *hsotg)
 	dwc2_writel(usbcfg, hsotg->regs + GUSBCFG);
 }
 
+static int dwc2_vbus_supply_init(struct dwc2_hsotg *hsotg)
+{
+	hsotg->vbus_supply = devm_regulator_get_optional(hsotg->dev, "vbus");
+	if (IS_ERR(hsotg->vbus_supply)) {
+		dev_info(hsotg->dev, "no vbus supply\n");
+		return 0;
+	}
+
+	return regulator_enable(hsotg->vbus_supply);
+}
+
+static int dwc2_vbus_supply_exit(struct dwc2_hsotg *hsotg)
+{
+	int ret;
+
+	if (hsotg->vbus_supply) {
+		ret = regulator_disable(hsotg->vbus_supply);
+		if (ret) {
+			dev_err(hsotg->dev, "error disabling vbus supply\n");
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
 /**
  * dwc2_enable_host_interrupts() - Enables the Host mode interrupts
  *
@@ -2021,6 +2047,8 @@ void dwc2_hcd_stop(struct dwc2_hsotg *hsotg)
 	/* Turn off the vbus power */
 	dev_dbg(hsotg->dev, "PortPower off\n");
 	dwc2_writel(0, hsotg->regs + HPRT0);
+
+	dwc2_vbus_supply_exit(hsotg);
 }
 
 /* Caller must hold driver lock */
@@ -3246,6 +3274,7 @@ static void dwc2_conn_id_status_change(struct work_struct *work)
 
 	/* B-Device connector (Device Mode) */
 	if (gotgctl & GOTGCTL_CONID_B) {
+		dwc2_vbus_supply_exit(hsotg);
 		/* Wait for switch to device mode */
 		dev_dbg(hsotg->dev, "connId B\n");
 		if (hsotg->bus_suspended) {
@@ -4349,6 +4378,10 @@ static int _dwc2_hcd_start(struct usb_hcd *hcd)
 	}
 
 	spin_unlock_irqrestore(&hsotg->lock, flags);
+
+	if (dwc2_is_host_mode(hsotg))
+		dwc2_vbus_supply_init(hsotg);
+
 	return 0;
 }
 
@@ -4412,6 +4445,7 @@ static int _dwc2_hcd_suspend(struct usb_hcd *hcd)
 		hprt0 |= HPRT0_SUSP;
 		hprt0 &= ~HPRT0_PWR;
 		dwc2_writel(hprt0, hsotg->regs + HPRT0);
+		dwc2_vbus_supply_exit(hsotg);
 	}
 
 	/* Enter hibernation */
@@ -4492,6 +4526,8 @@ static int _dwc2_hcd_resume(struct usb_hcd *hcd)
 		spin_unlock_irqrestore(&hsotg->lock, flags);
 		dwc2_port_resume(hsotg);
 	} else {
+		dwc2_vbus_supply_init(hsotg);
+
 		/* Wait for controller to correctly update D+/D- level */
 		usleep_range(3000, 5000);
 

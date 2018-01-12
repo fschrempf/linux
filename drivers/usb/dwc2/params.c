@@ -136,6 +136,16 @@ static void dwc2_set_stm32f4x9_fsotg_params(struct dwc2_hsotg *hsotg)
 	p->activate_stm_fs_transceiver = true;
 }
 
+static void dwc2_set_stm32mp1_hsotg_params(struct dwc2_hsotg *hsotg)
+{
+	struct dwc2_core_params *p = &hsotg->params;
+
+	p->activate_stm_id_detection = true;
+	p->host_rx_fifo_size = 440;
+	p->host_nperio_tx_fifo_size = 256;
+	p->host_perio_tx_fifo_size = 256;
+};
+
 const struct of_device_id dwc2_of_match_table[] = {
 	{ .compatible = "brcm,bcm2835-usb", .data = dwc2_set_bcm_params },
 	{ .compatible = "hisilicon,hi6220-usb", .data = dwc2_set_his_params  },
@@ -154,6 +164,8 @@ const struct of_device_id dwc2_of_match_table[] = {
 	{ .compatible = "st,stm32f4x9-fsotg",
 	  .data = dwc2_set_stm32f4x9_fsotg_params },
 	{ .compatible = "st,stm32f4x9-hsotg" },
+	{ .compatible = "st,stm32mp1-hsotg",
+	  .data = dwc2_set_stm32mp1_hsotg_params },
 	{},
 };
 MODULE_DEVICE_TABLE(of, dwc2_of_match_table);
@@ -454,6 +466,7 @@ static void dwc2_check_param_tx_fifo_sizes(struct dwc2_hsotg *hsotg)
 	int fifo;
 	int min;
 	u32 total = 0;
+	bool forced;
 	u32 dptxfszn;
 
 	fifo_count = dwc2_hsotg_tx_fifo_count(hsotg);
@@ -468,6 +481,12 @@ static void dwc2_check_param_tx_fifo_sizes(struct dwc2_hsotg *hsotg)
 		dwc2_set_param_tx_fifo_sizes(hsotg);
 	}
 
+	/*
+	 * Reading DPTXFSIZN registers requires the controller to be in device
+	 * mode. The mode will be forced, if necessary, to read these values.
+	 */
+	forced = dwc2_force_mode_if_needed(hsotg, false);
+
 	for (fifo = 1; fifo <= fifo_count; fifo++) {
 		dptxfszn = (dwc2_readl(hsotg->regs + DPTXFSIZN(fifo)) &
 			FIFOSIZE_DEPTH_MASK) >> FIFOSIZE_DEPTH_SHIFT;
@@ -480,6 +499,9 @@ static void dwc2_check_param_tx_fifo_sizes(struct dwc2_hsotg *hsotg)
 			hsotg->params.g_tx_fifo_size[fifo] = dptxfszn;
 		}
 	}
+
+	if (forced)
+		dwc2_clear_force_mode(hsotg);
 }
 
 #define CHECK_RANGE(_param, _min, _max, _def) do {			\

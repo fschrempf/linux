@@ -427,6 +427,13 @@ static int dwc2_driver_probe(struct platform_device *dev)
 	if (retval)
 		goto error;
 
+	if (hsotg->params.activate_stm_id_detection) {
+		u32 ggpio = dwc2_readl(hsotg->regs + GGPIO);
+
+		ggpio |= GGPIO_STM32_OTG_GCCFG_IDEN;
+		dwc2_writel(ggpio, hsotg->regs + GGPIO);
+	}
+
 	if (hsotg->dr_mode != USB_DR_MODE_HOST) {
 		retval = dwc2_gadget_init(hsotg, hsotg->irq);
 		if (retval)

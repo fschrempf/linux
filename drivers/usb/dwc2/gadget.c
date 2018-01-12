@@ -3301,7 +3301,7 @@ void dwc2_hsotg_core_init_disconnected(struct dwc2_hsotg *hsotg,
 			dcfg |= DCFG_DEVSPD_FS;
 		break;
 	default:
-		dcfg |= DCFG_DEVSPD_HS;
+		dcfg |= DCFG_DEVSPD_HS | DCFG_XCVRDLY;
 	}
 
 	dwc2_writel(dcfg,  hsotg->regs + DCFG);
