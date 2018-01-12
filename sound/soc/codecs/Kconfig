@@ -541,7 +541,7 @@ config SND_SOC_DIO2125
 	select GPIOLIB
 
 config SND_SOC_DMIC
-	tristate
+	tristate "Generic DMIC codec"
 
 config SND_SOC_HDMI_CODEC
 	tristate
@@ -1104,7 +1104,7 @@ config SND_SOC_WM8993
 	tristate
 
 config SND_SOC_WM8994
-	tristate
+	tristate "Wolfson Microelectronics WM8994 codec"
 
 config SND_SOC_WM8995
 	tristate

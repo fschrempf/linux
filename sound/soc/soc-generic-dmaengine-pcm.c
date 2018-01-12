@@ -328,6 +328,16 @@ static snd_pcm_uframes_t dmaengine_pcm_pointer(
 		return snd_dmaengine_pcm_pointer(substream);
 }
 
+int dmaengine_pcm_copy(struct snd_pcm_substream *substream,
+		       int channel, unsigned long hwoff,
+		       void *buf, unsigned long bytes)
+{
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct dmaengine_pcm *pcm = soc_platform_to_pcm(rtd->platform);
+
+	return pcm->config->copy(substream, channel, hwoff, buf, bytes);
+}
+
 static const struct snd_pcm_ops dmaengine_pcm_ops = {
 	.open		= dmaengine_pcm_open,
 	.close		= snd_dmaengine_pcm_close,
@@ -338,11 +348,30 @@ static const struct snd_pcm_ops dmaengine_pcm_ops = {
 	.pointer	= dmaengine_pcm_pointer,
 };
 
+static const struct snd_pcm_ops dmaengine_pcm_ops_cpy = {
+	.open		= dmaengine_pcm_open,
+	.close		= snd_dmaengine_pcm_close,
+	.ioctl		= snd_pcm_lib_ioctl,
+	.hw_params	= dmaengine_pcm_hw_params,
+	.hw_free	= snd_pcm_lib_free_pages,
+	.trigger	= snd_dmaengine_pcm_trigger,
+	.pointer	= dmaengine_pcm_pointer,
+	.copy_user	= dmaengine_pcm_copy,
+};
+
 static const struct snd_soc_platform_driver dmaengine_pcm_platform = {
 	.component_driver = {
 		.probe_order = SND_SOC_COMP_ORDER_LATE,
 	},
 	.ops		= &dmaengine_pcm_ops,
+	.pcm_new	= dmaengine_pcm_new,
+};
+
+static const struct snd_soc_platform_driver dmaengine_pcm_platform_cpy = {
+	.component_driver = {
+		.probe_order = SND_SOC_COMP_ORDER_LATE,
+	},
+	.ops		= &dmaengine_pcm_ops_cpy,
 	.pcm_new	= dmaengine_pcm_new,
 };
 
@@ -438,8 +467,12 @@ int snd_dmaengine_pcm_register(struct device *dev,
 	if (ret)
 		goto err_free_dma;
 
-	ret = snd_soc_add_platform(dev, &pcm->platform,
-		&dmaengine_pcm_platform);
+	if (config && config->copy)
+		ret = snd_soc_add_platform(dev, &pcm->platform,
+					   &dmaengine_pcm_platform_cpy);
+	else
+		ret = snd_soc_add_platform(dev, &pcm->platform,
+					   &dmaengine_pcm_platform);
 	if (ret)
 		goto err_free_dma;
 

@@ -537,6 +537,15 @@ static SOC_ENUM_SINGLE_DECL(dac_osr,
 static SOC_ENUM_SINGLE_DECL(adc_osr,
 			    WM8994_OVERSAMPLING, 1, osr_text);
 
+static const char * const companding_text[] = {
+	"ulaw", "Alaw",
+};
+
+static SOC_ENUM_SINGLE_DECL(aif1dac1_comp,
+			    WM8994_AIF1_CONTROL_2,
+			    WM8994_AIF1DAC_COMPMODE_SHIFT,
+			    companding_text);
+
 static const struct snd_kcontrol_new wm8994_snd_controls[] = {
 SOC_DOUBLE_R_TLV("AIF1ADC1 Volume", WM8994_AIF1_ADC1_LEFT_VOLUME,
 		 WM8994_AIF1_ADC1_RIGHT_VOLUME,
@@ -575,6 +584,9 @@ SOC_SINGLE("AIF2 EQ Switch", WM8994_AIF2_EQ_GAINS_1, 0, 1, 0),
 WM8994_DRC_SWITCH("AIF1DAC1 DRC Switch", WM8994_AIF1_DRC1_1, 2),
 WM8994_DRC_SWITCH("AIF1ADC1L DRC Switch", WM8994_AIF1_DRC1_1, 1),
 WM8994_DRC_SWITCH("AIF1ADC1R DRC Switch", WM8994_AIF1_DRC1_1, 0),
+
+SOC_ENUM("AIF1DAC1 Companding Mode", aif1dac1_comp),
+SOC_SINGLE("AIF1DAC1 Companding Switch", WM8994_AIF1_CONTROL_2, 4, 1, 0),
 
 WM8994_DRC_SWITCH("AIF1DAC2 DRC Switch", WM8994_AIF1_DRC2_1, 2),
 WM8994_DRC_SWITCH("AIF1ADC2L DRC Switch", WM8994_AIF1_DRC2_1, 1),
@@ -1262,7 +1274,7 @@ static int late_enable_ev(struct snd_soc_dapm_widget *w,
 	struct wm8994_priv *wm8994 = snd_soc_codec_get_drvdata(codec);
 
 	switch (event) {
-	case SND_SOC_DAPM_PRE_PMU:
+	case SND_SOC_DAPM_POST_PMU:
 		if (wm8994->aif1clk_enable) {
 			aif1clk_ev(w, kcontrol, SND_SOC_DAPM_PRE_PMU);
 			snd_soc_update_bits(codec, WM8994_AIF1_CLOCKING_1,
@@ -1594,26 +1606,31 @@ SND_SOC_DAPM_SUPPLY("AIF2CLK", SND_SOC_NOPM, 0, 0, aif2clk_late_ev,
 	SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
 
 SND_SOC_DAPM_PGA_E("Late DAC1L Enable PGA", SND_SOC_NOPM, 0, 0, NULL, 0,
-	late_enable_ev, SND_SOC_DAPM_PRE_PMU),
+	NULL, SND_SOC_DAPM_PRE_PMU),
 SND_SOC_DAPM_PGA_E("Late DAC1R Enable PGA", SND_SOC_NOPM, 0, 0, NULL, 0,
-	late_enable_ev, SND_SOC_DAPM_PRE_PMU),
+	NULL, SND_SOC_DAPM_PRE_PMU),
 SND_SOC_DAPM_PGA_E("Late DAC2L Enable PGA", SND_SOC_NOPM, 0, 0, NULL, 0,
-	late_enable_ev, SND_SOC_DAPM_PRE_PMU),
+	NULL, SND_SOC_DAPM_PRE_PMU),
 SND_SOC_DAPM_PGA_E("Late DAC2R Enable PGA", SND_SOC_NOPM, 0, 0, NULL, 0,
-	late_enable_ev, SND_SOC_DAPM_PRE_PMU),
+	NULL, SND_SOC_DAPM_PRE_PMU),
 SND_SOC_DAPM_PGA_E("Direct Voice", SND_SOC_NOPM, 0, 0, NULL, 0,
-	late_enable_ev, SND_SOC_DAPM_PRE_PMU),
+	NULL, SND_SOC_DAPM_PRE_PMU),
 
 SND_SOC_DAPM_MIXER_E("SPKL", WM8994_POWER_MANAGEMENT_3, 8, 0,
 		     left_speaker_mixer, ARRAY_SIZE(left_speaker_mixer),
-		     late_enable_ev, SND_SOC_DAPM_PRE_PMU),
+		     NULL, SND_SOC_DAPM_PRE_PMU),
 SND_SOC_DAPM_MIXER_E("SPKR", WM8994_POWER_MANAGEMENT_3, 9, 0,
 		     right_speaker_mixer, ARRAY_SIZE(right_speaker_mixer),
-		     late_enable_ev, SND_SOC_DAPM_PRE_PMU),
+		     NULL, SND_SOC_DAPM_PRE_PMU),
 SND_SOC_DAPM_MUX_E("Left Headphone Mux", SND_SOC_NOPM, 0, 0, &wm_hubs_hpl_mux,
-		   late_enable_ev, SND_SOC_DAPM_PRE_PMU),
+		   NULL, SND_SOC_DAPM_PRE_PMU),
 SND_SOC_DAPM_MUX_E("Right Headphone Mux", SND_SOC_NOPM, 0, 0, &wm_hubs_hpr_mux,
-		   late_enable_ev, SND_SOC_DAPM_PRE_PMU),
+		   NULL, SND_SOC_DAPM_PRE_PMU),
+
+/* writing wm8994 registers fails when aif1clk is enabled. */
+/* clock activation was differed previously up to mux or pga dapm stages */
+/* workaround : wait post dapm to activate aif1 clock */
+SND_SOC_DAPM_POST("Late Enable PGA", late_enable_ev),
 
 SND_SOC_DAPM_POST("Late Disable PGA", late_disable_ev)
 };
@@ -2378,14 +2395,23 @@ static int wm8994_set_dai_sysclk(struct snd_soc_dai *dai,
 	int i;
 
 	switch (dai->id) {
+	/*
+	 * Simple card provides unconditionnaly clock_id = 0.
+	 * Workaround to force WM8994_SYSCLK_MCLK1/2 clock for aif1/2
+	 */
 	case 1:
+		clk_id = WM8994_SYSCLK_MCLK1;
+		break;
 	case 2:
+		clk_id = WM8994_SYSCLK_MCLK2;
 		break;
 
 	default:
 		/* AIF3 shares clocking with AIF1/2 */
 		return -EINVAL;
 	}
+
+	dev_info(codec->dev, "%s:.clock id %d\n", __func__, clk_id);
 
 	switch (clk_id) {
 	case WM8994_SYSCLK_MCLK1:
