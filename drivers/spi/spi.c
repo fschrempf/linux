@@ -1621,10 +1621,8 @@ of_register_spi_device(struct spi_controller *ctlr, struct device_node *nc)
 	struct spi_device *spi;
 	int rc;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	/* Alloc an spi_device */
 	spi = spi_alloc_device(ctlr);
-	pr_info("%s:%i\n", __func__, __LINE__);
 	if (!spi) {
 		dev_err(&ctlr->dev, "spi_device alloc error for %pOF\n", nc);
 		rc = -ENOMEM;
@@ -1638,22 +1636,17 @@ of_register_spi_device(struct spi_controller *ctlr, struct device_node *nc)
 		dev_err(&ctlr->dev, "cannot find modalias for %pOF\n", nc);
 		goto err_out;
 	}
-	pr_info("%s:%i modalias = %s\n", __func__, __LINE__, spi->modalias);
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	rc = of_spi_parse_dt(ctlr, spi, nc);
-	pr_info("%s:%i\n", __func__, __LINE__);
 	if (rc)
 		goto err_out;
 
 	/* Store a pointer to the node in the device structure */
 	of_node_get(nc);
 	spi->dev.of_node = nc;
-	pr_info("%s:%i\n", __func__, __LINE__);
 
 	/* Register the new device */
 	rc = spi_add_device(spi);
-	pr_info("%s:%i\n", __func__, __LINE__);
 	if (rc) {
 		dev_err(&ctlr->dev, "spi_device register error %pOF\n", nc);
 		goto err_of_node_put;
@@ -1680,18 +1673,13 @@ static void of_register_spi_devices(struct spi_controller *ctlr)
 	struct spi_device *spi;
 	struct device_node *nc;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	if (!ctlr->dev.of_node)
 		return;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	for_each_available_child_of_node(ctlr->dev.of_node, nc) {
-		pr_info("%s:%i\n", __func__, __LINE__);
 		if (of_node_test_and_set_flag(nc, OF_POPULATED))
 			continue;
-		pr_info("%s:%i\n", __func__, __LINE__);
 		spi = of_register_spi_device(ctlr, nc);
-		pr_info("%s:%i\n", __func__, __LINE__);
 		if (IS_ERR(spi)) {
 			dev_warn(&ctlr->dev,
 				 "Failed to create SPI device for %pOF\n", nc);
@@ -2035,15 +2023,11 @@ static int of_spi_register_master(struct spi_controller *ctlr)
 	int nb, i, *cs;
 	struct device_node *np = ctlr->dev.of_node;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	if (!np)
 		return 0;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	nb = of_gpio_named_count(np, "cs-gpios");
-	pr_info("%s:%i\n", __func__, __LINE__);
 	ctlr->num_chipselect = max_t(int, nb, ctlr->num_chipselect);
-	pr_info("%s:%i\n", __func__, __LINE__);
 
 	/* Return error only for an incorrectly formed cs-gpios property */
 	if (nb == 0 || nb == -ENOENT)
@@ -2051,12 +2035,10 @@ static int of_spi_register_master(struct spi_controller *ctlr)
 	else if (nb < 0)
 		return nb;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	cs = devm_kzalloc(&ctlr->dev, sizeof(int) * ctlr->num_chipselect,
 			  GFP_KERNEL);
 	ctlr->cs_gpios = cs;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	if (!ctlr->cs_gpios)
 		return -ENOMEM;
 
@@ -2065,7 +2047,6 @@ static int of_spi_register_master(struct spi_controller *ctlr)
 
 	for (i = 0; i < nb; i++)
 		cs[i] = of_get_named_gpio(np, "cs-gpios", i);
-	pr_info("%s:%i\n", __func__, __LINE__);
 
 	return 0;
 }
@@ -2135,9 +2116,7 @@ int spi_register_controller(struct spi_controller *ctlr)
 	if (status)
 		return status;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	if (!spi_controller_is_slave(ctlr)) {
-		pr_info("%s:%i\n", __func__, __LINE__);
 		status = of_spi_register_master(ctlr);
 		if (status)
 			return status;
@@ -2150,9 +2129,7 @@ int spi_register_controller(struct spi_controller *ctlr)
 		return -EINVAL;
 	/* allocate dynamic bus number using Linux idr */
 	if ((ctlr->bus_num < 0) && ctlr->dev.of_node) {
-		pr_info("%s:%i\n", __func__, __LINE__);
 		id = of_alias_get_id(ctlr->dev.of_node, "spi");
-		pr_info("%s:%i\n", __func__, __LINE__);
 		if (id >= 0) {
 			ctlr->bus_num = id;
 			mutex_lock(&board_lock);
@@ -3413,14 +3390,11 @@ static int spi_check_buswidth_req(struct spi_mem *mem, u8 buswidth, bool tx)
 {
 	u32 mode = mem->spi->mode;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	switch(buswidth) {
 	case 1:
-		pr_info("%s:%i\n", __func__, __LINE__);
 		return 0;
 
 	case 2:
-		pr_info("%s:%i\n", __func__, __LINE__);
 		if ((tx && (mode & (SPI_TX_DUAL | SPI_TX_QUAD))) ||
 		    (!tx && (mode & (SPI_RX_DUAL | SPI_RX_QUAD))))
 			return 0;
@@ -3428,7 +3402,6 @@ static int spi_check_buswidth_req(struct spi_mem *mem, u8 buswidth, bool tx)
 		break;
 
 	case 4:
-		pr_info("%s:%i\n", __func__, __LINE__);
 		if ((tx && (mode & SPI_TX_QUAD)) ||
 		    (!tx && (mode & SPI_RX_QUAD)))
 			return 0;
@@ -3436,11 +3409,9 @@ static int spi_check_buswidth_req(struct spi_mem *mem, u8 buswidth, bool tx)
 		break;
 
 	default:
-		pr_info("%s:%i width = %d\n", __func__, __LINE__, buswidth);
 		break;
 	}
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	return -ENOTSUPP;
 }
 
@@ -3464,31 +3435,26 @@ bool spi_mem_supports_op(struct spi_mem *mem, const struct spi_mem_op *op)
 {
 	struct spi_controller *ctlr = mem->spi->controller;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
+
 	if (spi_check_buswidth_req(mem, op->cmd.buswidth, true))
 		return false;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	if (op->addr.nbytes &&
 	    spi_check_buswidth_req(mem, op->addr.buswidth, true))
 		return false;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	if (op->dummy.nbytes &&
 	    spi_check_buswidth_req(mem, op->dummy.buswidth, true))
 		return false;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	if (op->data.nbytes &&
 	    spi_check_buswidth_req(mem, op->data.buswidth,
 				   op->data.dir == SPI_MEM_DATA_IN ?
 				   false : true))
 		return false;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	if (ctlr->mem_ops)
 		return ctlr->mem_ops->supports_op(mem, op);
-	pr_info("%s:%i\n", __func__, __LINE__);
 
 	return true;
 }
@@ -3515,13 +3481,10 @@ int spi_mem_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 	u8 *tmpbuf;
 	int ret;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	if (!spi_mem_supports_op(mem, op))
 		return -ENOTSUPP;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	if (ctlr->mem_ops) {
-		pr_info("%s:%i\n", __func__, __LINE__);
 		if (ctlr->auto_runtime_pm) {
 			ret = pm_runtime_get_sync(ctlr->dev.parent);
 			if (ret < 0) {
@@ -3534,9 +3497,7 @@ int spi_mem_exec_op(struct spi_mem *mem, const struct spi_mem_op *op)
 
 		mutex_lock(&ctlr->bus_lock_mutex);
 		mutex_lock(&ctlr->io_mutex);
-		pr_info("%s:%i\n", __func__, __LINE__);
 		ret = ctlr->mem_ops->exec_op(mem, op);
-		pr_info("%s:%i\n", __func__, __LINE__);
 		mutex_unlock(&ctlr->io_mutex);
 		mutex_unlock(&ctlr->bus_lock_mutex);
 
@@ -3707,15 +3668,12 @@ static void spi_mem_shutdown(struct spi_device *spi)
 int spi_mem_driver_register_with_owner(struct spi_mem_driver *memdrv,
 				       struct module *owner)
 {
-	int ret;
-	pr_info("%s:%i\n", __func__, __LINE__);
+
 	memdrv->spidrv.probe = spi_mem_probe;
 	memdrv->spidrv.remove = spi_mem_remove;
 	memdrv->spidrv.shutdown = spi_mem_shutdown;
 
-	ret = __spi_register_driver(owner, &memdrv->spidrv);
-	pr_info("%s:%i ret = %d\n", __func__, __LINE__, ret);
-	return ret;
+	return __spi_register_driver(owner, &memdrv->spidrv);
 }
 EXPORT_SYMBOL_GPL(spi_mem_driver_register_with_owner);
 
@@ -3727,7 +3685,6 @@ EXPORT_SYMBOL_GPL(spi_mem_driver_register_with_owner);
  */
 void spi_mem_driver_unregister(struct spi_mem_driver *memdrv)
 {
-	pr_info("%s:%i\n", __func__, __LINE__);
 	spi_unregister_driver(&memdrv->spidrv);
 }
 EXPORT_SYMBOL_GPL(spi_mem_driver_unregister);

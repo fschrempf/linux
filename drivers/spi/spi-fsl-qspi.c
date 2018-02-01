@@ -352,7 +352,6 @@ static irqreturn_t fsl_qspi_irq_handler(int irq, void *dev_id)
 
 	/* clear interrupt */
 	reg = qspi_readl(q, q->iobase + QUADSPI_FR);
-	pr_info("%s:%i FR = %08x\n", __func__, __LINE__, reg);
 	qspi_writel(q, reg, q->iobase + QUADSPI_FR);
 
 	if (reg & QUADSPI_FR_TFF_MASK)
@@ -374,7 +373,6 @@ static int fsl_qspi_check_buswidth(struct fsl_qspi *q, u8 width)
 		break;
 	}
 
-	pr_info("%s:%i invalid width = %d\n", __func__, __LINE__, width);
 	return -ENOTSUPP;
 }
 
@@ -384,45 +382,36 @@ static bool fsl_qspi_supports_op(struct spi_mem *mem,
 	struct fsl_qspi *q = spi_controller_get_devdata(mem->spi->master);
 	int ret;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	ret = fsl_qspi_check_buswidth(q, op->cmd.buswidth);
-	pr_info("%s:%i ret = %d\n", __func__, __LINE__, ret);
 
 	if (op->addr.nbytes)
 		ret |= fsl_qspi_check_buswidth(q, op->addr.buswidth);
-	pr_info("%s:%i ret = %d\n", __func__, __LINE__, ret);
 
 	if (op->dummy.nbytes)
 		ret |= fsl_qspi_check_buswidth(q, op->dummy.buswidth);
-	pr_info("%s:%i ret = %d\n", __func__, __LINE__, ret);
 
 	if (op->data.nbytes)
 		ret |= fsl_qspi_check_buswidth(q, op->data.buswidth);
-	pr_info("%s:%i ret = %d\n", __func__, __LINE__, ret);
+
 	if (ret)
 		return false;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	/* Max 24-bit address. */
 	if (op->addr.nbytes > 3)
 		return false;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	/* Max 64 dummy clock cycles. */
 	if (op->dummy.nbytes * 8 / op->dummy.buswidth > 64)
 		return false;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	if (op->data.dir == SPI_MEM_DATA_IN &&
 	    op->data.nbytes > q->devtype_data->rxfifo)
 		return false;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	if (op->data.dir == SPI_MEM_DATA_OUT &&
 	    op->data.nbytes > q->devtype_data->txfifo)
 		return false;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	return true;
 }
 
@@ -476,9 +465,7 @@ static void fsl_qspi_prepare_lut(struct fsl_qspi *q,
 
 	fsl_qspi_unlock_lut(q);
 	for (i = 0; i < ARRAY_SIZE(lutval); i++) {
-		pr_info("%s:%i LUT[%d] = %08x\n", __func__, __LINE__, i, lutval[i]);
 		qspi_writel(q, lutval[i], base + QUADSPI_LUT_REG(i));
-		//qspi_writel(q, 0xffffffff, base + QUADSPI_LUT_REG(i));
 	}
 	fsl_qspi_lock_lut(q);
 }
@@ -519,7 +506,6 @@ static void fsl_qspi_select_mem(struct fsl_qspi *q, u8 cs)
 	void __iomem *base = q->iobase;
 	int i;
 
-	pr_info("%s:%i CS = %d\n", __func__, __LINE__, cs);
 	for (i = 0; i < 4; i++) {
 		if (i < cs)
 			qspi_writel(q, q->memmap_phy,
@@ -539,7 +525,6 @@ static int fsl_qspi_exec_op(struct spi_mem *mem,
 	int err, i, j;
 	u32 val;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	mutex_lock(&q->lock);
 	fsl_qspi_clk_prep_enable(q);
 	do {
@@ -555,11 +540,9 @@ static int fsl_qspi_exec_op(struct spi_mem *mem,
 		}
 		break;
 	} while (1);
-	pr_info("%s:%i\n", __func__, __LINE__);
 
 	fsl_qspi_select_mem(q, mem->spi->chip_select);
 	fsl_qspi_prepare_lut(q, op);
-	pr_info("%s:%i\n", __func__, __LINE__);
 	if (op->addr.nbytes) {
 		u32 addr = 0;
 		for (i = 0; i < op->addr.nbytes; i++) {
@@ -567,12 +550,6 @@ static int fsl_qspi_exec_op(struct spi_mem *mem,
 			addr |= op->addr.buf[i];
 		}
 
-		for (; i < 3; i++) {
-			addr <<= 8;
-			addr |= op->addr.buf[op->addr.nbytes - 1];
-		}
-
-		pr_info("%s:%i addr = %08x\n", __func__, __LINE__, q->memmap_phy + addr);
 		qspi_writel(q, q->memmap_phy + addr, base + QUADSPI_SFAR);
 	} else {
 		qspi_writel(q, q->memmap_phy, base + QUADSPI_SFAR);
@@ -590,19 +567,15 @@ static int fsl_qspi_exec_op(struct spi_mem *mem,
 		}
 	}
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 
 	qspi_writel(q, QUADSPI_RBCT_WMRK_MASK | QUADSPI_RBCT_RXBRD_USEIPS,
 		    base + QUADSPI_RBCT);
-	pr_info("%s:%i mcr = %08x\n", __func__, __LINE__,
-		qspi_readl(q, base + QUADSPI_MCR));
 	qspi_writel(q,
 		    qspi_readl(q, base + QUADSPI_MCR) |
 		    QUADSPI_MCR_CLR_RXF_MASK | QUADSPI_MCR_CLR_TXF_MASK,
 		    base + QUADSPI_MCR);
 
 	init_completion(&q->c);
-	pr_info("%s:%i\n", __func__, __LINE__);
 
 	/*
 	 * Always start the sequence at index 0 since we update the LUT at
@@ -616,24 +589,19 @@ static int fsl_qspi_exec_op(struct spi_mem *mem,
 		err = -ETIMEDOUT;
 	else
 		err = 0;
-	pr_info("%s:%i ret = %d\n", __func__, __LINE__, err);
 
 	/* FIXME: replace this by AHB reads. */
 	if (!err && op->data.nbytes && op->data.dir == SPI_MEM_DATA_IN) {
 		u8 *buf = op->data.buf.in;
 
-		pr_info("%s:%i\n", __func__, __LINE__);
 		for (i = 0; i < op->data.nbytes; i += 4) {
 			val = qspi_readl(q, base + QUADSPI_RBDR(i / 4));
-			pr_info("%s:%i val = %08x\n", __func__, __LINE__, val);
 
 			for (j = 0; j < 4 && j + i < op->data.nbytes; j++) {
 				buf[i + j] = val >> (j * 8);
 			}
-			pr_info("%s:%i\n", __func__, __LINE__);
 		}
 	}
-	pr_info("%s:%i\n", __func__, __LINE__);
 	fsl_qspi_clk_disable_unprep(q);
 	mutex_unlock(&q->lock);
 
@@ -746,14 +714,11 @@ static int fsl_qspi_probe(struct platform_device *pdev)
 	struct fsl_qspi *q;
 	int ret;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	ctlr = spi_alloc_master(&pdev->dev, sizeof(*q));
 	if (!ctlr)
 		return -ENOMEM;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	q = spi_controller_get_devdata(ctlr);
-	pr_info("%s:%i\n", __func__, __LINE__);
 	q->dev = dev;
 	q->devtype_data = of_device_get_match_data(dev);
 	if (!q->devtype_data) {
@@ -761,10 +726,8 @@ static int fsl_qspi_probe(struct platform_device *pdev)
 		goto err_put_ctrl;
 	}
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	platform_set_drvdata(pdev, q);
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	/* find the resources */
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM, "QuadSPI");
 	q->iobase = devm_ioremap_resource(dev, res);
@@ -773,9 +736,7 @@ static int fsl_qspi_probe(struct platform_device *pdev)
 		goto err_put_ctrl;
 	}
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	q->big_endian = of_property_read_bool(np, "big-endian");
-	pr_info("%s:%i big endian = %d\n", __func__, __LINE__, q->big_endian);
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
 					"QuadSPI-memory");
 	if (!devm_request_mem_region(dev, res->start, resource_size(res),
@@ -785,10 +746,8 @@ static int fsl_qspi_probe(struct platform_device *pdev)
 		goto err_put_ctrl;
 	}
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	q->memmap_phy = res->start;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	/* find the clocks */
 	q->clk_en = devm_clk_get(dev, "qspi_en");
 	if (IS_ERR(q->clk_en)) {
@@ -796,21 +755,18 @@ static int fsl_qspi_probe(struct platform_device *pdev)
 		goto err_put_ctrl;
 	}
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	q->clk = devm_clk_get(dev, "qspi");
 	if (IS_ERR(q->clk)) {
 		ret = PTR_ERR(q->clk);
 		goto err_put_ctrl;
 	}
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	ret = fsl_qspi_clk_prep_enable(q);
 	if (ret) {
 		dev_err(dev, "can not enable the clock\n");
 		goto err_put_ctrl;
 	}
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	/* find the irq */
 	ret = platform_get_irq(pdev, 0);
 	if (ret < 0) {
@@ -818,7 +774,6 @@ static int fsl_qspi_probe(struct platform_device *pdev)
 		goto err_disable_clk;
 	}
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	ret = devm_request_irq(dev, ret,
 			fsl_qspi_irq_handler, 0, pdev->name, q);
 	if (ret) {
@@ -826,7 +781,6 @@ static int fsl_qspi_probe(struct platform_device *pdev)
 		goto err_disable_clk;
 	}
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	mutex_init(&q->lock);
 
 	ctlr->bus_num = -1;
@@ -841,14 +795,11 @@ static int fsl_qspi_probe(struct platform_device *pdev)
 	fsl_qspi_nor_setup_last(q);
 
 	ctlr->dev.of_node = pdev->dev.of_node;
-	pr_info("%s:%i\n", __func__, __LINE__);
 	ret = spi_register_controller(ctlr);
 	if (ret)
 		goto err_destroy_mutex;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	fsl_qspi_clk_disable_unprep(q);
-	pr_info("%s:%i\n", __func__, __LINE__);
 
 	return 0;
 
@@ -891,19 +842,14 @@ static int fsl_qspi_resume(struct platform_device *pdev)
 	int ret;
 	struct fsl_qspi *q = platform_get_drvdata(pdev);
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	ret = fsl_qspi_clk_prep_enable(q);
 	if (ret)
 		return ret;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	fsl_qspi_nor_setup(q);
-	pr_info("%s:%i\n", __func__, __LINE__);
 	fsl_qspi_nor_setup_last(q);
-	pr_info("%s:%i\n", __func__, __LINE__);
 
 	fsl_qspi_clk_disable_unprep(q);
-	pr_info("%s:%i\n", __func__, __LINE__);
 
 	return 0;
 }

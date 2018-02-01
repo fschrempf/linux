@@ -103,8 +103,6 @@ static int spinand_read_from_cache_op(struct spinand_device *spinand,
 	u8 addrs[2];
 	int ret;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
-
 	if (req->datalen) {
 		adjreq.datalen = nanddev_page_size(nand);
 		adjreq.dataoffs = 0;
@@ -141,13 +139,10 @@ static int spinand_read_from_cache_op(struct spinand_device *spinand,
 		op.data.buf.in = buf;
 		op.data.nbytes = min_t(unsigned int, nbytes, max_rxbytes);
 
-		pr_info("%s:%i nbytes = %d\n", __func__, __LINE__, op.data.nbytes);
 		ret = spi_mem_exec_op(spinand->spimem, &op);
-		pr_info("%s:%i ret = %d\n", __func__, __LINE__, ret);
 		if (ret)
 			return ret;
 
-		pr_info("%s:%i\n", __func__, __LINE__);
 		buf += op.data.nbytes;
 		nbytes -= op.data.nbytes;
 		column += op.data.nbytes;
@@ -550,16 +545,13 @@ static int spinand_manufacturer_detect(struct spinand_device *spinand)
 	int ret;
 
 	for (i = 0; i < ARRAY_SIZE(spinand_manufacturers); i++) {
-		pr_info("%s:%i\n", __func__, __LINE__);
 		ret = spinand_manufacturers[i]->ops->detect(spinand);
-		pr_info("%s:%i\n", __func__, __LINE__);
 		if (ret > 0) {
 			spinand->manufacturer.manu = spinand_manufacturers[i];
 			return 0;
 		} else if (ret < 0) {
 			return ret;
 		}
-		pr_info("%s:%i\n", __func__, __LINE__);
 	}
 
 	return -ENOTSUPP;
@@ -592,7 +584,6 @@ spinand_select_op_variant(struct spinand_device *spinand,
 
 		op.data.nbytes = nbytes;
 		if (spi_mem_supports_op(spinand->spimem, &op)) {
-			pr_info("%s:%i variant = %d\n", __func__, __LINE__, i);
 			return &variants->ops[i];
 		}
 	}
@@ -607,17 +598,14 @@ int spinand_match_and_init(struct spinand_device *spinand,
 	struct nand_device *nand = spinand_to_nand(spinand);
 	unsigned int i;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	for (i = 0; i < table_size; i++) {
 		const struct spinand_info *info = &table[i];
 		const struct spi_mem_op *op;
 		unsigned int nbytes;
 
-		pr_info("%s:%i devid = %02x %02x\n", __func__, __LINE__, devid, info->devid);
 		if (devid != info->devid)
 			continue;
 
-		pr_info("%s:%i\n", __func__, __LINE__);
 		nand->memorg = table[i].memorg;
 		nand->eccreq = table[i].eccreq;
 
@@ -632,7 +620,6 @@ int spinand_match_and_init(struct spinand_device *spinand,
 		if (!op)
 			return -ENOTSUPP;
 
-		pr_info("%s:%i\n", __func__, __LINE__);
 		spinand->op_templates.read_cache = op;
 
 		nbytes = min_t(unsigned int,
@@ -646,19 +633,16 @@ int spinand_match_and_init(struct spinand_device *spinand,
 		if (!op)
 			return -ENOTSUPP;
 
-		pr_info("%s:%i\n", __func__, __LINE__);
 		spinand->op_templates.write_cache = op;
 
 		op = spinand_select_op_variant(spinand,
 					       info->op_variants.update_cache,
 					       nbytes);
-		pr_info("%s:%i\n", __func__, __LINE__);
 		spinand->op_templates.update_cache = op;
 
 		return 0;
 	}
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	return -ENOTSUPP;
 }
 
@@ -668,28 +652,23 @@ static int spinand_detect(struct spinand_device *spinand)
 	struct nand_device *nand = &spinand->base;
 	int ret;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	ret = spinand_reset_op(spinand);
 	if (ret)
 		return ret;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	ret = spinand_read_id_op(spinand, spinand->id.data);
 	if (ret)
 		return ret;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	spinand->id.len = SPINAND_MAX_ID_LEN;
 
 	ret = spinand_manufacturer_detect(spinand);
-	pr_info("%s:%i\n", __func__, __LINE__);
 	if (ret) {
 		pr_err("unknown raw ID %*phN\n",
 		       SPINAND_MAX_ID_LEN, spinand->id.data);
 		return ret;
 	}
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	pr_info("%s SPI NAND was found.\n", spinand->manufacturer.manu->name);
 	pr_info("%llu MiB, block size: %zu KiB, page size: %zu, OOB size: %u\n",
 		nanddev_size(nand) >> 20, nanddev_eraseblock_size(nand) >> 10,
@@ -771,13 +750,11 @@ static int spinand_probe(struct spi_mem *mem)
 	struct mtd_info *mtd;
 	int ret;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	spinand = devm_kzalloc(&mem->spi->dev, sizeof(*spinand),
 			       GFP_KERNEL);
 	if (!spinand)
 		return -ENOMEM;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	spinand->spimem = mem;
 	spi_mem_set_drvdata(mem, spinand);
 	spinand_set_of_node(spinand, mem->spi->dev.of_node);
@@ -785,16 +762,13 @@ static int spinand_probe(struct spi_mem *mem)
 	mtd = spinand_to_mtd(spinand);
 	mtd->dev.parent = &mem->spi->dev;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	ret = spinand_init(spinand);
 	if (ret)
 		return ret;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	ret = mtd_device_register(mtd, NULL, 0);
 	if (ret)
 		goto err_spinand_cleanup;
-	pr_info("%s:%i\n", __func__, __LINE__);
 
 	return 0;
 
@@ -810,9 +784,7 @@ static int spinand_remove(struct spi_mem *mem)
 	struct mtd_info *mtd;
 	int ret;
 
-	pr_info("%s:%i\n", __func__, __LINE__);
 	spinand = spi_mem_get_drvdata(mem);
-	pr_info("%s:%i\n", __func__, __LINE__);
 	mtd = spinand_to_mtd(spinand);
 
 	ret = mtd_device_unregister(mtd);
