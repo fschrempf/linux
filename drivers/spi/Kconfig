@@ -643,6 +643,14 @@ config SPI_STM32
 	  is not available, the driver automatically falls back to
 	  PIO mode.
 
+config SPI_STM32_QUADSPI
+	tristate "STM32 Quad SPI controller"
+	depends on ARCH_STM32 || COMPILE_TEST
+	help
+	  This enables support for the STM32 Quad SPI controller.
+	  This controller does not support generic SPI. It only supports the
+	  high-level SPI memory interface.
+
 config SPI_ST_SSC4
 	tristate "STMicroelectronics SPI SSC-based driver"
 	depends on ARCH_STI || COMPILE_TEST
