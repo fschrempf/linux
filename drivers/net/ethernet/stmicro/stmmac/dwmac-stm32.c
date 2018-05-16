@@ -20,6 +20,7 @@
 #include <linux/slab.h>
 #include <linux/stmmac.h>
 #include <linux/pm_wakeirq.h>
+#include <linux/micrel_phy.h>
 
 #include "stmmac_platform.h"
 
@@ -38,6 +39,7 @@ struct stm32_dwmac {
 	u32 mode_reg;		/* MAC glue-logic mode register */
 	struct regmap *regmap;
 	u32 speed;
+	bool provide_phy_clk;
 };
 
 static int stm32_dwmac_init(struct plat_stmmacenet_data *plat_dat)
@@ -55,7 +57,13 @@ static int stm32_dwmac_init(struct plat_stmmacenet_data *plat_dat)
 	} else if (plat_dat->interface == PHY_INTERFACE_MODE_RMII) {
 		pr_debug("init for RMII\n");
 		val = 4;
-		val2 = 0;
+		if (dwmac->provide_phy_clk){
+			val2 = 2; /* enable internal RMII clock (ETH_REF_CLK_SEL) */
+			pr_debug("ETH_REF_CLK_SEL enabled\n");
+		}
+		else {
+			val2 = 0;
+		}
 	} else if (plat_dat->interface == PHY_INTERFACE_MODE_GMII) {
 		pr_debug("init for GMII\n");
 		val = 0;
@@ -205,9 +213,46 @@ static int stm32_dwmac_parse_data(struct stm32_dwmac *dwmac,
 
 		return dwmac->irq_pwr_wakeup;
 	}
+	
+	dwmac->provide_phy_clk = of_property_read_bool(np, "ex,provide-phy-clk");
+	if (dwmac->provide_phy_clk){
+		dev_info(dev, "Provide 50MHz clock for phy\n");
+	}
 
 	return err;
 }
+
+/* For stmexceet boards, that use 50MHz clock from SOC to supply PHY */
+static int stm32_dwmac_ksz8081_phy_fixup(struct phy_device *phydev)
+{
+	int val;
+
+	if (IS_BUILTIN(CONFIG_PHYLIB)) {
+		printk(KERN_INFO "Configure phy for 50MHz clock\n");
+		// tell the PHY that a 50MHz clock is used
+		val = phy_read(phydev, 0x1F);
+		val |= 0x0080;
+		phy_write(phydev, 0x1F, val);
+	}
+
+	return 0;
+}
+
+static void stm32_dwmac_fixup_phy(struct stm32_dwmac *dwmac)
+{
+	if (dwmac->provide_phy_clk){
+		phy_register_fixup_for_uid(PHY_ID_KSZ8081, MICREL_PHY_ID_MASK, stm32_dwmac_ksz8081_phy_fixup);
+	}
+}
+
+
+static void stm32_dwmac_remove_fixup_phy(struct stm32_dwmac *dwmac)
+{
+	if (dwmac->provide_phy_clk){
+		phy_unregister_fixup_for_uid(PHY_ID_KSZ8081, MICREL_PHY_ID_MASK);
+	}
+}
+
 
 static int stm32_dwmac_probe(struct platform_device *pdev)
 {
@@ -236,6 +281,8 @@ static int stm32_dwmac_probe(struct platform_device *pdev)
 		goto err_remove_config_dt;
 	}
 
+	stm32_dwmac_fixup_phy(dwmac);
+
 	plat_dat->bsp_priv = dwmac;
 
 	ret = stm32_dwmac_init(plat_dat);
@@ -262,6 +309,7 @@ static int stm32_dwmac_remove(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct stmmac_priv *priv = netdev_priv(ndev);
+	stm32_dwmac_remove_fixup_phy(priv->plat->bsp_priv);
 	int ret = stmmac_dvr_remove(&pdev->dev);
 
 	stm32_dwmac_clk_disable(priv->plat->bsp_priv);
