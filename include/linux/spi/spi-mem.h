@@ -124,7 +124,8 @@ struct spi_mem_op {
 /**
  * struct spi_mem - describes a SPI memory device
  * @spi: the underlying SPI device
- * @drvpriv: spi_mem_drviver private data
+ * @drvpriv: spi_mem_driver private data
+ * @name: name of the SPI memory device
  *
  * Extra information that describe the SPI memory device and may be needed by
  * the controller to properly handle this device should be placed here.
@@ -135,6 +136,7 @@ struct spi_mem_op {
 struct spi_mem {
 	struct spi_device *spi;
 	void *drvpriv;
+	char *name;
 };
 
 /**
@@ -178,6 +180,7 @@ struct spi_controller_mem_ops {
 			    const struct spi_mem_op *op);
 	int (*exec_op)(struct spi_mem *mem,
 		       const struct spi_mem_op *op);
+	const char *(*get_name)(struct spi_mem *mem);
 };
 
 /**
@@ -235,6 +238,8 @@ bool spi_mem_supports_op(struct spi_mem *mem,
 
 int spi_mem_exec_op(struct spi_mem *mem,
 		    const struct spi_mem_op *op);
+
+const char *spi_mem_get_name(struct spi_mem *mem);
 
 int spi_mem_driver_register_with_owner(struct spi_mem_driver *drv,
 				       struct module *owner);
