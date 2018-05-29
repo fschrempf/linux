@@ -979,6 +979,10 @@ static int spinand_init(struct spinand_device *spinand)
 	if (!spinand->scratchbuf)
 		return -ENOMEM;
 
+	ret = spinand_init_cfg_cache(spinand);
+	if (ret)
+		goto err_free_bufs;
+
 	ret = spinand_detect(spinand);
 	if (ret)
 		goto err_free_bufs;
@@ -995,10 +999,6 @@ static int spinand_init(struct spinand_device *spinand)
 		goto err_free_bufs;
 
 	spinand->oobbuf = spinand->databuf + nanddev_page_size(nand);
-
-	ret = spinand_init_cfg_cache(spinand);
-	if (ret)
-		goto err_free_bufs;
 
 	ret = spinand_manufacturer_init(spinand);
 	if (ret) {
