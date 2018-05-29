@@ -123,7 +123,7 @@ struct stm32_qspi {
 	struct clk *clk;
 	u32 clk_rate;
 	struct completion cmd_completion;
-
+	int selected;
 	/*
 	 * to protect device configuration, could be different between
 	 * 2 flash access (bk1, bk2)
@@ -209,9 +209,8 @@ static bool stm32_qspi_supports_op(struct spi_mem *mem,
 static void stm32_qspi_select_mem(struct stm32_qspi *qspi, struct spi_device *spi)
 {
 	u32 presc, temp;
-	static bool selected = false;
 
-	if (selected)
+	if (qspi->selected == spi->chip_select)
 		return;
 
 	temp = readl_relaxed(qspi->io_base + QUADSPI_DCR) & ~DCR_FSIZE_MASK;
@@ -226,7 +225,7 @@ static void stm32_qspi_select_mem(struct stm32_qspi *qspi, struct spi_device *sp
 	temp |= spi->chip_select ? CR_FSEL:0;
 	writel_relaxed(temp, qspi->io_base + QUADSPI_CR);
 
-	selected = true;
+	qspi->selected = spi->chip_select;
 }
 
 static void stm32_qspi_read_fifo(u8 *val, void __iomem *addr)
@@ -447,6 +446,7 @@ static int stm32_qspi_probe(struct platform_device *pdev)
 		reset_control_deassert(rstc);
 	}
 
+	qspi->selected = -1;
 	ctlr->bus_num = -1;
 	ctlr->num_chipselect = 2;
 	ctlr->mem_ops = &stm32_qspi_mem_ops;
