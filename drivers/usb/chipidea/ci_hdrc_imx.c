@@ -256,28 +256,19 @@ static int ci_hdrc_imx_notify_event(struct ci_hdrc *ci, unsigned int event)
 
 	switch (event) {
 	case CI_HDRC_IMX_HSIC_ACTIVE_EVENT:
-		if (!IS_ERR(data->pinctrl) &&
-			!IS_ERR(data->pinctrl_hsic_active)) {
-			ret = pinctrl_select_state(data->pinctrl,
-					data->pinctrl_hsic_active);
-			if (ret)
-				dev_err(dev,
-					"hsic_active select failed, err=%d\n",
-					ret);
-			return ret;
-		}
+		ret = pinctrl_select_state(data->pinctrl,
+					   data->pinctrl_hsic_active);
+		if (ret)
+			dev_err(dev, "hsic_active select failed, err=%d\n",
+				ret);
 		break;
 	case CI_HDRC_IMX_HSIC_SUSPEND_EVENT:
-		if (data->usbmisc_data) {
-			ret = imx_usbmisc_hsic_set_connect(data->usbmisc_data);
-			if (ret)
-				dev_err(dev,
-					"hsic_set_connect failed, err=%d\n",
-					ret);
-			return ret;
-		}
-		break;
-	default:
+		if (!data->usbmisc_data)
+			break;
+
+		ret = imx_usbmisc_hsic_set_connect(data->usbmisc_data);
+		if (ret)
+			dev_err(dev, "hsic_set_connect failed, err=%d\n", ret);
 		break;
 	}
 
@@ -314,33 +305,36 @@ static int ci_hdrc_imx_probe(struct platform_device *pdev)
 	if (IS_ERR(data->usbmisc_data))
 		return PTR_ERR(data->usbmisc_data);
 
-	data->pinctrl = devm_pinctrl_get(dev);
-	if (IS_ERR(data->pinctrl)) {
-		dev_dbg(dev, "pinctrl get failed, err=%ld\n",
-						PTR_ERR(data->pinctrl));
-	} else {
+	if (of_usb_get_phy_mode(dev->of_node) == USBPHY_INTERFACE_MODE_HSIC) {
+		data->pinctrl = devm_pinctrl_get(dev);
+		if (IS_ERR(data->pinctrl)) {
+			dev_err(dev, "failed to get HSIC pinctrl, err=%ld\n",
+				PTR_ERR(data->pinctrl));
+			return PTR_ERR(data->pinctrl);
+		}
+
 		pinctrl_hsic_idle = pinctrl_lookup_state(data->pinctrl, "idle");
 		if (IS_ERR(pinctrl_hsic_idle)) {
-			dev_dbg(dev,
-				"pinctrl_hsic_idle lookup failed, err=%ld\n",
-						PTR_ERR(pinctrl_hsic_idle));
-		} else {
-			ret = pinctrl_select_state(data->pinctrl,
-						pinctrl_hsic_idle);
-			if (ret) {
-				dev_err(dev,
-					"hsic_idle select failed, err=%d\n",
-									ret);
-				return ret;
-			}
+			dev_err(dev, "failed to get HSIC idle pinctrl, "
+				     "err=%ld\n", PTR_ERR(pinctrl_hsic_idle));
+			return PTR_ERR(pinctrl_hsic_idle);
+		}
+
+		ret = pinctrl_select_state(data->pinctrl, pinctrl_hsic_idle);
+		if (ret) {
+			dev_err(dev, "failed to select HSIC idle pinctrl, "
+				     "err=%d\n", ret);
+			return ret;
 		}
 
 		data->pinctrl_hsic_active = pinctrl_lookup_state(data->pinctrl,
-								"active");
-		if (IS_ERR(data->pinctrl_hsic_active))
-			dev_dbg(dev,
-				"pinctrl_hsic_active lookup failed, err=%ld\n",
-					PTR_ERR(data->pinctrl_hsic_active));
+								 "active");
+		if (IS_ERR(data->pinctrl_hsic_active)) {
+			dev_err(dev, "failed to get HSIC active pinctrl, "
+				     "err=%ld\n",
+				     PTR_ERR(data->pinctrl_hsic_active));
+			return PTR_ERR(data->pinctrl_hsic_active);
+		}
 	}
 
 	ret = imx_get_clks(dev);
@@ -385,7 +379,7 @@ static int ci_hdrc_imx_probe(struct platform_device *pdev)
 			/* no pad regualator is needed */
 			data->hsic_pad_regulator = NULL;
 		} else if (IS_ERR(data->hsic_pad_regulator)) {
-			dev_err(dev, "Get hsic pad regulator error: %ld\n",
+			dev_err(dev, "Get HSIC pad regulator error: %ld\n",
 					PTR_ERR(data->hsic_pad_regulator));
 			ret = PTR_ERR(data->hsic_pad_regulator);
 			goto err_clk;
@@ -395,7 +389,7 @@ static int ci_hdrc_imx_probe(struct platform_device *pdev)
 			ret = regulator_enable(data->hsic_pad_regulator);
 			if (ret) {
 				dev_err(dev,
-					"Fail to enable hsic pad regulator\n");
+					"Fail to enable HSIC pad regulator\n");
 				goto err_clk;
 			}
 		}
@@ -407,9 +401,8 @@ static int ci_hdrc_imx_probe(struct platform_device *pdev)
 		goto disable_hsic_regulator;
 	}
 
-	data->ci_pdev = ci_hdrc_add_device(dev,
-				pdev->resource, pdev->num_resources,
-				&pdata);
+	data->ci_pdev = ci_hdrc_add_device(dev, pdev->resource,
+					   pdev->num_resources, &pdata);
 	if (IS_ERR(data->ci_pdev)) {
 		ret = PTR_ERR(data->ci_pdev);
 		if (ret != -EPROBE_DEFER)
