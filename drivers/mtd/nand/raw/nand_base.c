@@ -253,6 +253,45 @@ static void nand_release_device(struct mtd_info *mtd)
 }
 
 /**
+ * nand_bbm_page_offset - Get the page offsets for bad block markers
+ * @chip: NAND chip object
+ * @index: Index for the page offset
+ *
+ * Returns an integer that corresponds to the page offset within a block, for
+ * a page that is used to store bad block markers. If no more page offsets are
+ * available, -1 is returned.
+ */
+int nand_bbm_page_offset(struct nand_chip *chip, int index)
+{
+	struct mtd_info *mtd = nand_to_mtd(chip);
+	int last_page = ((mtd->erasesize - mtd->writesize) >>
+			 chip->page_shift) & chip->pagemask;
+
+	switch (index) {
+	case 0:
+		if ((chip->bbt_options & NAND_BBT_SCANLASTPAGE) &&
+		    !(chip->bbt_options & NAND_BBT_SCAN2NDPAGE))
+			return last_page;
+		else
+			return 0;
+		break;
+	case 1:
+		if (chip->bbt_options & NAND_BBT_SCAN2NDPAGE)
+			return 1;
+		break;
+	case 2:
+		if ((chip->bbt_options & NAND_BBT_SCANLASTPAGE) &&
+		    (chip->bbt_options & NAND_BBT_SCAN2NDPAGE))
+			return last_page;
+		break;
+	default:
+		break;
+	}
+
+	return -1;
+}
+
+/**
  * nand_block_bad - [DEFAULT] Read bad block marker from the chip
  * @chip: NAND chip object
  * @ofs: offset from device start
@@ -261,18 +300,14 @@ static void nand_release_device(struct mtd_info *mtd)
  */
 static int nand_block_bad(struct nand_chip *chip, loff_t ofs)
 {
-	struct mtd_info *mtd = nand_to_mtd(chip);
-	int page, page_end, res;
+	int page_offset, i = 0;
+	int res, first_page = (int)(ofs >> chip->page_shift) & chip->pagemask;
 	u8 bad;
 
-	if (chip->bbt_options & NAND_BBT_SCANLASTPAGE)
-		ofs += mtd->erasesize - mtd->writesize;
+	page_offset = nand_bbm_page_offset(chip, 0);
 
-	page = (int)(ofs >> chip->page_shift) & chip->pagemask;
-	page_end = page + (chip->bbt_options & NAND_BBT_SCAN2NDPAGE ? 2 : 1);
-
-	for (; page < page_end; page++) {
-		res = chip->ecc.read_oob(chip, page);
+	do {
+		res = chip->ecc.read_oob(chip, first_page + page_offset);
 		if (res < 0)
 			return res;
 
@@ -284,7 +319,9 @@ static int nand_block_bad(struct nand_chip *chip, loff_t ofs)
 			res = hweight8(bad) < chip->badblockbits;
 		if (res)
 			return res;
-	}
+
+		page_offset = nand_bbm_page_offset(chip, ++i);
+	} while (page_offset != -1);
 
 	return 0;
 }
@@ -303,7 +340,7 @@ static int nand_default_block_markbad(struct nand_chip *chip, loff_t ofs)
 	struct mtd_info *mtd = nand_to_mtd(chip);
 	struct mtd_oob_ops ops;
 	uint8_t buf[2] = { 0, 0 };
-	int ret = 0, res, i = 0;
+	int ret = 0, res, i = 0, page_offset;
 
 	memset(&ops, 0, sizeof(ops));
 	ops.oobbuf = buf;
@@ -316,17 +353,16 @@ static int nand_default_block_markbad(struct nand_chip *chip, loff_t ofs)
 	}
 	ops.mode = MTD_OPS_PLACE_OOB;
 
-	/* Write to first/last page(s) if necessary */
-	if (chip->bbt_options & NAND_BBT_SCANLASTPAGE)
-		ofs += mtd->erasesize - mtd->writesize;
+	page_offset = nand_bbm_page_offset(chip, 0);
+
 	do {
-		res = nand_do_write_oob(mtd, ofs, &ops);
+		res = nand_do_write_oob(mtd, ofs + page_offset * mtd->writesize,
+					&ops);
 		if (!ret)
 			ret = res;
 
-		i++;
-		ofs += mtd->writesize;
-	} while ((chip->bbt_options & NAND_BBT_SCAN2NDPAGE) && i < 2);
+		page_offset = nand_bbm_page_offset(chip, ++i);
+	} while (page_offset != -1);
 
 	return ret;
 }
