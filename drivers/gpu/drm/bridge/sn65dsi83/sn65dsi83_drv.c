@@ -2,6 +2,7 @@
  * Licensed under the GPL-2.
  */
 
+#include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/gpio/consumer.h>
 #include <linux/module.h>
@@ -10,11 +11,12 @@
 #include <linux/of_graph.h>
 #include <linux/slab.h>
 
-#include <drm/drmP.h>
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
+#include <drm/drm_bridge.h>
 #include <drm/drm_edid.h>
 #include <drm/drm_mipi_dsi.h>
+#include <drm/drm_print.h>
 #include <drm/drm_connector.h>
 #include <drm/drm_crtc_helper.h>
 #include <video/mipi_display.h>
@@ -77,9 +79,9 @@ static int sn65dsi83_connector_get_modes(struct drm_connector *connector)
     if (brg->vm.flags & DISPLAY_FLAGS_DE_LOW)
         *bus_flags |= DRM_BUS_FLAG_DE_LOW;
     if (brg->vm.flags & DISPLAY_FLAGS_PIXDATA_NEGEDGE)
-        *bus_flags |= DRM_BUS_FLAG_PIXDATA_NEGEDGE;
+        *bus_flags |= DRM_BUS_FLAG_PIXDATA_SAMPLE_NEGEDGE;
     if (brg->vm.flags & DISPLAY_FLAGS_PIXDATA_POSEDGE)
-        *bus_flags |= DRM_BUS_FLAG_PIXDATA_POSEDGE;
+        *bus_flags |= DRM_BUS_FLAG_PIXDATA_SAMPLE_POSEDGE;
 
     ret = drm_display_info_set_bus_formats(&connector->display_info,
                            &bus_format, 1);
@@ -166,7 +168,8 @@ static void sn65dsi83_bridge_mode_set(struct drm_bridge *bridge,
     drm_mode_copy(&sn65dsi83->curr_mode, adj_mode);
 }
 
-static int sn65dsi83_bridge_attach(struct drm_bridge *bridge)
+static int sn65dsi83_bridge_attach(struct drm_bridge *bridge,
+                    enum drm_bridge_attach_flags flags)
 {
     struct sn65dsi83 *sn65dsi83 = bridge_to_sn65dsi83(bridge);
     int ret;
