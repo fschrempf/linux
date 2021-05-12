@@ -2558,6 +2558,34 @@ static const struct panel_desc jenson_jt60050 = {
 	.connector_type = DRM_MODE_CONNECTOR_LVDS,
 };
 
+static const struct drm_display_mode jenson_jt60170_mode = {
+	.clock = 25000,
+	.hdisplay = 800,
+	.hsync_start = 800 + 4,
+	.hsync_end = 800 + 4 + 4,
+	.htotal = 800 + 4 + 4 + 8,
+	.vdisplay = 480,
+	.vsync_start = 480 + 4,
+	.vsync_end = 480 + 4 + 4,
+	.vtotal = 480 + 4 + 4 + 8,
+	.flags = DRM_MODE_FLAG_NVSYNC | DRM_MODE_FLAG_NHSYNC,
+};
+
+static const struct panel_desc jenson_jt60170 = {
+	.modes = &jenson_jt60170_mode,
+	.num_modes = 1,
+	.bpc = 8,
+	.size = {
+		.width = 95,
+		.height = 54,
+	},
+	.bus_format = MEDIA_BUS_FMT_RGB888_1X24,
+	.bus_flags = DRM_BUS_FLAG_DE_HIGH |
+		     DRM_BUS_FLAG_PIXDATA_SAMPLE_NEGEDGE |
+		     DRM_BUS_FLAG_SYNC_SAMPLE_NEGEDGE,
+	.connector_type = DRM_MODE_CONNECTOR_DPI,
+};
+
 static const struct drm_display_mode kingdisplay_kd116n21_30nv_a010_mode = {
 	.clock = 81000,
 	.hdisplay = 1366,
@@ -4330,6 +4358,9 @@ static const struct of_device_id platform_of_match[] = {
 	}, {
 		.compatible = "jenson,jt60050",
 		.data = &jenson_jt60050,
+	}, {
+		.compatible = "jenson,jt60170",
+		.data = &jenson_jt60170,
 	}, {
 		.compatible = "kingdisplay,kd116n21-30nv-a010",
 		.data = &kingdisplay_kd116n21_30nv_a010,
