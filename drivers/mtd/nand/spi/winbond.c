@@ -60,6 +60,36 @@ static const struct mtd_ooblayout_ops w25xxxgv_ooblayout = {
 	.free = w25xxxgv_ooblayout_free,
 };
 
+static int w25nxxkv_ooblayout_ecc(struct mtd_info *mtd, int section,
+				  struct mtd_oob_region *region)
+{
+
+	if (section > 3)
+		return -ERANGE;
+
+	region->offset = (16 * section) + 64;
+	region->length = 13;
+
+	return 0;
+}
+
+static int w25nxxkv_ooblayout_free(struct mtd_info *mtd, int section,
+				   struct mtd_oob_region *region)
+{
+	if (section > 3)
+		return -ERANGE;
+
+	region->offset = (16 * section) + 2;
+	region->length = 14;
+
+	return 0;
+}
+
+static const struct mtd_ooblayout_ops w25nxxkv_ooblayout = {
+	.ecc = w25nxxkv_ooblayout_ecc,
+	.free = w25nxxkv_ooblayout_free,
+};
+
 static int w25m02gv_select_target(struct spinand_device *spinand,
 				  unsigned int target)
 {
@@ -94,6 +124,15 @@ static const struct spinand_info winbond_spinand_table[] = {
 					      &update_cache_variants),
 		     0,
 		     SPINAND_ECCINFO(&w25xxxgv_ooblayout, NULL)),
+	SPINAND_INFO("W25N02KV",
+		     SPINAND_ID(SPINAND_READID_METHOD_OPCODE_DUMMY, 0xaa, 0x22),
+		     NAND_MEMORG(1, 2048, 128, 64, 2048, 40, 1, 1, 1),
+		     NAND_ECCREQ(8, 512),
+		     SPINAND_INFO_OP_VARIANTS(&read_cache_variants,
+					      &write_cache_variants,
+					      &update_cache_variants),
+		     0,
+		     SPINAND_ECCINFO(&w25nxxkv_ooblayout, NULL)),
 };
 
 static int winbond_spinand_init(struct spinand_device *spinand)
